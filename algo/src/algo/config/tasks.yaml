@@ -1,0 +1,256 @@
+strategy_design_task:
+  description: >
+    You are the Senior Quantitative Researcher. Your job is to design a rigorous
+    VWAP+RSI intraday trading strategy for NQ futures (ticker: NQ=F) on 5-minute bars.
+
+    STEP 1 — Fetch historical data:
+      Use the "Market Data Fetcher" tool with:
+        ticker = "NQ=F"
+        period = "60d"
+        interval = "5m"
+      Examine the returned summary (total_bars, date_range, sample_tail) to understand
+      the data quality and market conditions in the recent 60-day window.
+
+    STEP 2 — Compute indicators:
+      Pass the full JSON output from Step 1 to the "Indicator Calculator" tool.
+      Use the following initial parameters (you may adjust after seeing the statistics):
+        rsi_period = 14
+        vwap_std_window = 20
+        vwap_band_multipliers = [1.0, 2.0]
+      Study the returned indicator statistics carefully:
+        - What % of bars have RSI < 30 or > 70? (oversold/overbought frequency)
+        - What % of bars have VWAP z-score < -1 or > +1? (band breach frequency)
+      These statistics will inform your threshold selection.
+
+    STEP 3 — Design the strategy specification:
+      Based on the actual indicator statistics from Step 2, produce a complete
+      strategy specification document with the following sections:
+
+      A. PARAMETERS TABLE:
+         List all parameters with chosen values and justification based on data.
+
+      B. ENTRY CONDITIONS (LONG):
+         Specify the exact VWAP z-score threshold, RSI threshold, and any
+         confirmation requirements. Justify each numeric choice with reference
+         to the indicator statistics from Step 2.
+
+      C. ENTRY CONDITIONS (SHORT):
+         Mirror logic for short entries.
+
+      D. EXIT CONDITIONS:
+         - Take-profit: define in ticks (NQ: 1 tick = $5, 0.25 points)
+         - Stop-loss: define in ticks
+         - EOD exit: specify cutoff in bars from session end
+
+      E. MARKET REGIME FILTER:
+         When should the strategy NOT trade? (e.g., low-volume sessions,
+         first/last 15 minutes of RTH session)
+
+      F. STATISTICAL RATIONALE:
+         Based on the indicator frequency statistics you observed, explain why
+         this combination of thresholds provides a mean-reversion edge.
+         Reference specific numbers from the indicator summary.
+
+    IMPORTANT: Your parameter choices MUST be grounded in the actual data statistics
+    returned by the tools. Do not invent numbers — derive them from what you observed.
+  expected_output: >
+    A structured strategy specification document with:
+    - Parameters table (all numeric values with data-driven justification)
+    - LONG entry conditions with exact VWAP z-score and RSI thresholds
+    - SHORT entry conditions (mirror)
+    - Exit rules (TP ticks, SL ticks, EOD cutoff)
+    - Market regime filter conditions
+    - Statistical rationale referencing actual indicator frequency data
+    The document should clearly state all threshold values so the backtester
+    can use them directly in the next task.
+  agent: quant_researcher
+
+backtest_task:
+  description: >
+    You are the Senior Quantitative Researcher continuing your analysis.
+    You have just designed the strategy specification in the previous task.
+    Now you must empirically validate it using real historical data.
+
+    STEP 1 — Re-fetch and re-compute indicators (if needed):
+      If you do not have the indicator JSON in your context, call:
+        1. "Market Data Fetcher" (ticker="NQ=F", period="60d", interval="5m")
+        2. "Indicator Calculator" with rsi_period=14, vwap_std_window=20
+
+    STEP 2 — Run the primary backtest:
+      Use the "Strategy Backtester" tool with the parameters from your
+      strategy specification. Start with:
+        long_vwap_zscore_threshold: [your chosen value from Task 1]
+        long_rsi_threshold: [your chosen value from Task 1]
+        short_vwap_zscore_threshold: [your chosen value from Task 1]
+        short_rsi_threshold: [your chosen value from Task 1]
+        take_profit_ticks: [your chosen value]
+        stop_loss_ticks: [your chosen value]
+        instrument: "NQ"
+        slippage_ticks: 1
+        commission_per_rt: 4.10
+
+    STEP 3 — Sensitivity analysis (run 2-3 additional parameter variants):
+      Test at least 2 variations of your thresholds (e.g., tighter/looser
+      VWAP z-score, different RSI levels) to understand parameter sensitivity.
+      Call "Strategy Backtester" for each variant and compare results.
+
+    STEP 4 — Produce the Backtest Report:
+      Summarise all backtest runs in a clear comparison table showing:
+        - Parameter set used
+        - Total trades, Win Rate %, Avg R:R
+        - Net P&L ($), Profit Factor
+        - Max Drawdown ($), Sharpe Ratio (annualised)
+
+      Then provide your recommendation:
+        - Which parameter set performed best? Why?
+        - Are the results statistically meaningful (enough trades)?
+        - What are the key risks you observed in the trade log?
+        - Recommended parameters for the strategy engineer to implement.
+  expected_output: >
+    A comprehensive Backtest Report containing:
+    - A comparison table of all tested parameter sets with full metrics
+    - Identification of the best-performing parameter set with justification
+    - Assessment of statistical significance (number of trades, consistency)
+    - Key risk observations from the trade log (e.g., consecutive losses,
+      large single-trade drawdowns, EOD exits impact)
+    - Final recommended parameters for live implementation
+    All dollar amounts should reference NQ tick value ($5/tick = $20/point).
+  agent: quant_researcher
+  context:
+    - strategy_design_task
+
+code_architecture_task:
+  description: >
+    You are the Strategy Engineer. You have received the validated strategy
+    specification AND backtest results from the Quant Researcher (in your context).
+
+    Your job is to translate the empirically validated strategy into a complete
+    Python code architecture blueprint using ib_insync for Interactive Brokers.
+
+    YOUR DELIVERABLE must include:
+
+    1. IMPLEMENTABILITY REVIEW:
+       - Review the researcher's chosen parameters (from the backtest results).
+       - Flag any conditions that are ambiguous or could cause look-ahead bias.
+       - Note computational requirements for live execution (latency considerations).
+
+    2. MODULE STRUCTURE (directory tree):
+         algo_live/
+           config.py          # All strategy parameters from backtest as constants
+           indicators.py      # VWAP, RSI, VWAP-band computation (matches backtest logic)
+           signal_engine.py   # Entry/exit signal generation
+           order_manager.py   # ib_insync order placement and management
+           data_handler.py    # ib_insync real-time bar subscription
+           risk_guard.py      # Pre-trade risk checks
+           main_bot.py        # Main async event loop
+
+    3. KEY CODE SKELETONS (actual Python, not pseudo-code):
+
+       a. config.py — dataclass with ALL parameters from backtest best run:
+          @dataclass
+          class StrategyConfig:
+              instrument: str
+              rsi_period: int
+              vwap_std_window: int
+              long_z_thresh: float
+              long_rsi_thresh: float
+              ... (all parameters)
+
+       b. indicators.py — must match backtest logic exactly:
+          - compute_session_vwap(df) -> pd.Series
+          - compute_vwap_zscore(close, vwap, window) -> pd.Series
+          - compute_rsi(close, period) -> pd.Series
+
+       c. data_handler.py — ib_insync real-time bar subscription:
+          - Contract definition for NQ (Future, 'NQ', 'CME')
+          - reqRealTimeBars or reqHistoricalData in streaming mode
+          - Bar accumulation into rolling DataFrame
+
+       d. signal_engine.py — wraps indicator logic into live signal generation
+
+       e. order_manager.py — bracket order via ib_insync with TP and SL
+
+    4. CRITICAL NOTES:
+       - Explain how the live VWAP resets at session open (09:30 ET for NQ).
+       - Explain bar timing: using confirmed closed bars only (no look-ahead).
+       - Specify the ib_insync async event loop pattern with asyncio.
+
+    Use type hints and docstrings throughout. Mark TODOs clearly.
+  expected_output: >
+    A complete code architecture document with:
+    - Implementability review and any flagged issues
+    - Module structure directory tree
+    - Syntactically correct Python code skeletons for all 5 modules
+    - Critical implementation notes on VWAP reset, bar timing, async loop
+    - Requirements list (pip packages with versions)
+  agent: strategy_engineer
+  context:
+    - strategy_design_task
+    - backtest_task
+
+risk_review_task:
+  description: >
+    You are the Chief Risk Officer. You have received the strategy specification,
+    backtest results, AND the code architecture blueprint in your context.
+
+    Perform a comprehensive adversarial risk review of the ENTIRE pipeline.
+
+    YOUR REVIEW must cover:
+
+    1. BACKTEST REALITY CHECK:
+       - Is the backtest sample size statistically significant?
+         (Rule of thumb: need ≥ 30 trades for basic significance, ≥ 100 for robust)
+       - What is the 60-day backtest's representativeness?
+         (60 days may cover only 1-2 market regimes; discuss out-of-sample risk)
+       - What does the max drawdown imply for a $50,000 account?
+         (Express as % of account equity)
+       - Is the Sharpe ratio reliable given the sample size?
+
+    2. STRATEGY-LEVEL FAILURE SCENARIOS (identify ≥ 3):
+       For each scenario, describe the market condition, how the strategy fails,
+       and the maximum estimated loss per scenario in NQ ticks and USD.
+
+    3. MANDATORY RISK CONTROLS (non-negotiable):
+       a. Per-trade stop-loss: confirm or override the researcher's SL ticks.
+          Justify based on ATR or session range considerations.
+       b. Daily drawdown circuit breaker: specify exact $ amount for a $50K account.
+          When triggered: flatten all, cancel orders, halt for remainder of session.
+       c. Maximum position: 1 contract max for accounts < $100K. State this explicitly.
+       d. Prohibited trading windows: first 15 min and last 15 min of RTH session.
+          (09:30-09:45 ET and 15:45-16:00 ET for NQ)
+       e. News event halt: FOMC, CPI, NFP — halt 5 min before, resume 10 min after.
+       f. Break-even analysis: at what win rate does the strategy break even
+          after commissions ($4.10/RT) and 1-tick slippage?
+
+    4. risk_guard.py CODE (actual Python, syntactically correct):
+       Implement these four functions:
+         def check_daily_drawdown(current_pnl: float, max_drawdown_limit: float) -> bool
+         def check_position_limit(current_positions: int, max_positions: int) -> bool
+         def check_session_time(current_time: datetime, allowed_windows: list[tuple]) -> bool
+         def emergency_flatten(ib: IB, portfolio: list) -> None  # uses ib_insync
+
+    5. RISK CONTROL ADDENDUM (formal numbered rules):
+       Format as a numbered list:
+         Rule 1 — [Name]: [Exact parameter] → [Automated consequence]
+         ...
+       Minimum 8 rules. Cover all mandatory controls plus any additional ones
+       you identify from the backtest trade log.
+
+    6. GO / NO-GO RECOMMENDATION:
+       For PAPER TRADING: Go or No-Go? State conditions.
+       For LIVE TRADING: What additional validation is required before live?
+       (Minimum suggestion: paper trade for 30 days with ≥ 30 trades, then review.)
+  expected_output: >
+    A complete Risk Control Document containing:
+    - Backtest reality check with statistical significance assessment
+    - ≥3 failure scenarios with quantified loss estimates in ticks and USD
+    - All 6 mandatory risk controls with exact numeric parameters
+    - Complete risk_guard.py with 4 functions (syntactically correct Python)
+    - Numbered Risk Control Addendum (≥8 rules, formal mandatory format)
+    - Clear Go/No-Go recommendation for paper trading AND live trading
+    Saved as the final deliverable: risk_control_addendum.md
+  agent: risk_manager
+  context:
+    - strategy_design_task
+    - backtest_task
+    - code_architecture_task
