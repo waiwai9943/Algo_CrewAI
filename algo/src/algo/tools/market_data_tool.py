@@ -56,6 +56,10 @@ class MarketDataInput(BaseModel):
         default=30,
         description="Session open minute (ET). NQ RTH starts at 09:30.",
     )
+    output_file: str = Field(
+        default="market_data.json",
+        description="Local JSON file path where the full OHLCV data will be saved.",
+    )
 
 
 # ─────────────────────────────────────────────
@@ -65,22 +69,16 @@ class MarketDataInput(BaseModel):
 class MarketDataTool(BaseTool):
     """
     Fetches 5-minute (or other interval) OHLCV bars for NQ or CL futures
-    from Yahoo Finance and returns a JSON summary for quantitative analysis.
-
-    Returns a JSON string with:
-      - ticker, interval, period
-      - total_bars: number of bars fetched
-      - date_range: first and last bar timestamp
-      - sample_tail: last 10 bars as a list of OHLCV records
-      - full_data: all bars as a list of OHLCV records (for indicator computation)
+    from Yahoo Finance, saves the full dataset to a local JSON file,
+    and returns a summary for quantitative analysis.
     """
 
     name: str = "Market Data Fetcher"
     description: str = (
         "Fetches historical OHLCV (Open, High, Low, Close, Volume) bar data "
         "for NQ (E-mini Nasdaq-100 Futures) or CL (Crude Oil Futures) from "
-        "Yahoo Finance. Returns 5-minute bars as JSON. Use this tool first to "
-        "obtain raw price data before computing indicators or running backtests."
+        "Yahoo Finance. Saves the full data to a local file (e.g. 'market_data.json') "
+        "and returns a summary JSON. Use this tool first to obtain raw price data."
     )
     args_schema: Type[BaseModel] = MarketDataInput
 
@@ -91,19 +89,10 @@ class MarketDataTool(BaseTool):
         interval: str = "5m",
         session_open_hour: int = 9,
         session_open_minute: int = 30,
+        output_file: str = "market_data.json",
     ) -> str:
         """
-        Download OHLCV data via yfinance and return as JSON string.
-
-        Args:
-            ticker: Futures ticker (e.g. 'NQ=F', 'CL=F')
-            period: History lookback (e.g. '60d')
-            interval: Bar size (e.g. '5m')
-            session_open_hour: RTH session open hour (ET)
-            session_open_minute: RTH session open minute (ET)
-
-        Returns:
-            JSON string with bar data and summary statistics.
+        Download OHLCV data via yfinance, save to file, and return summary JSON.
         """
         try:
             raw: pd.DataFrame = yf.download(
@@ -150,7 +139,8 @@ class MarketDataTool(BaseTool):
             columns={"Datetime": "datetime", "index": "datetime"}
         ).to_dict(orient="records")
 
-        result = {
+        # Save full data to local file to avoid LLM context size limits
+        payload = {
             "ticker": ticker,
             "interval": interval,
             "period": period,
@@ -162,8 +152,27 @@ class MarketDataTool(BaseTool):
             },
             "columns": ["datetime", "open", "high", "low", "close", "volume",
                         "session_date", "typical_price"],
+            "full_data": records,
+        }
+        
+        try:
+            with open(output_file, "w") as f:
+                json.dump(payload, f, default=str)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to save data to {output_file}: {e}"})
+
+        result = {
+            "ticker": ticker,
+            "interval": interval,
+            "period": period,
+            "session_open": f"{session_open_hour:02d}:{session_open_minute:02d} ET",
+            "total_bars": len(records),
+            "date_range": {
+                "first": str(df.index[0]),
+                "last": str(df.index[-1]),
+            },
+            "saved_to": output_file,
             "sample_tail": records[-10:],   # last 10 bars for quick inspection
-            "full_data": records,            # all bars for indicator computation
         }
 
         return json.dumps(result, default=str)

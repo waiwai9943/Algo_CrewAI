@@ -16,29 +16,30 @@ print()
 
 # ── Test MarketDataTool ───────────────────────────────────
 print("Testing MarketDataTool (5d NQ=F 5m)...")
-raw = market_data_tool._run(ticker="NQ=F", period="5d", interval="5m")
+raw = market_data_tool._run(ticker="NQ=F", period="5d", interval="5m", output_file="market_data.json")
 r1 = json.loads(raw)
 if "error" in r1:
     print(f"  ERROR: {r1['error']}")
 else:
-    print(f"  OK — {r1['total_bars']} bars | {r1['date_range']}")
+    print(f"  OK — {r1['total_bars']} bars | {r1['date_range']} | saved to {r1['saved_to']}")
 
     # ── Test IndicatorTool ─────────────────────────────────
     print("Testing IndicatorTool...")
-    ind_raw = indicator_tool._run(market_data_json=raw, rsi_period=14, vwap_std_window=20)
+    ind_raw = indicator_tool._run(input_file="market_data.json", output_file="indicator_data.json", rsi_period=14, vwap_std_window=20)
     r2 = json.loads(ind_raw)
     if "error" in r2:
         print(f"  ERROR: {r2['error']}")
     else:
         s = r2["summary"]
-        print(f"  OK — valid bars: {s['valid_bars_with_indicators']}")
+        print(f"  OK — valid bars: {s['valid_bars_with_indicators']} | saved to {r2['saved_to']}")
         print(f"  RSI mean={s['rsi_stats']['mean']}, oversold%={s['rsi_stats']['pct_oversold_30']}")
         print(f"  VWAP Z <-1: {s['vwap_zscore_stats']['pct_below_neg1']}%")
 
         # ── Test BacktestTool ──────────────────────────────
         print("Testing BacktestTool...")
         bt_raw = backtest_tool._run(
-            indicator_data_json=ind_raw,
+            input_file="indicator_data.json",
+            output_file="backtest_results.json",
             long_vwap_zscore_threshold=-1.5,
             long_rsi_threshold=35.0,
             short_vwap_zscore_threshold=1.5,
@@ -52,7 +53,7 @@ else:
             print(f"  ERROR: {r3['error']}")
         else:
             p = r3["performance"]
-            print(f"  OK — {p['total_trades']} trades | WR={p['win_rate_pct']}%")
+            print(f"  OK — {p['total_trades']} trades | WR={p['win_rate_pct']}% | saved to {r3['saved_to']}")
             print(f"  Net PnL=${p['net_pnl_usd']} | Sharpe={p['sharpe_ratio_annualised']}")
             print(f"  MaxDD=${p['max_drawdown_usd']} | PF={p['profit_factor']}")
 

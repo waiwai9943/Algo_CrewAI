@@ -26,12 +26,13 @@ from pydantic import BaseModel, Field
 class IndicatorInput(BaseModel):
     """Input schema for IndicatorTool."""
 
-    market_data_json: str = Field(
-        ...,
-        description=(
-            "JSON string returned by MarketDataTool. Must contain a 'full_data' key "
-            "with a list of OHLCV bar records including 'typical_price' and 'session_date'."
-        ),
+    input_file: str = Field(
+        default="market_data.json",
+        description="Local JSON file containing raw market data (output from MarketDataTool).",
+    )
+    output_file: str = Field(
+        default="indicator_data.json",
+        description="Local JSON file where the enriched indicator data will be saved.",
     )
     rsi_period: int = Field(
         default=14,
@@ -149,62 +150,47 @@ def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
 class IndicatorTool(BaseTool):
     """
     Computes VWAP, VWAP z-score, VWAP bands (±1σ, ±2σ), and RSI from
-    OHLCV data provided as JSON (output of MarketDataTool).
+    OHLCV data saved in a local JSON file.
 
-    Returns JSON with all original bar columns plus:
-      - vwap          : Session-anchored VWAP (resets each trading day)
-      - vwap_zscore   : (Close - VWAP) / StdDev(Close - VWAP, N)
-      - vwap_upper_1  : VWAP + 1σ
-      - vwap_lower_1  : VWAP - 1σ
-      - vwap_upper_2  : VWAP + 2σ
-      - vwap_lower_2  : VWAP - 2σ
-      - rsi           : RSI(period)
+    Saves the enriched indicators data to a local output file and returns summary stats.
     """
 
     name: str = "Indicator Calculator"
     description: str = (
         "Computes VWAP (session-anchored, resets daily), VWAP z-score, "
-        "VWAP upper/lower bands (±1σ and ±2σ), and RSI from raw OHLCV data. "
-        "Input must be the JSON output from MarketDataTool. "
-        "Returns an enriched JSON with all indicator columns appended. "
+        "VWAP upper/lower bands (±1σ and ±2σ), and RSI from a local raw market data JSON file. "
+        "Saves the enriched indicators to another local JSON file and returns summary stats. "
         "Use this after MarketDataTool and before BacktestTool."
     )
     args_schema: Type[BaseModel] = IndicatorInput
 
     def _run(
         self,
-        market_data_json: str,
+        input_file: str = "market_data.json",
+        output_file: str = "indicator_data.json",
         rsi_period: int = 14,
         vwap_std_window: int = 20,
         vwap_band_multipliers: list[float] | None = None,
     ) -> str:
         """
-        Compute all indicators and return enriched bar data as JSON.
-
-        Args:
-            market_data_json: JSON from MarketDataTool.
-            rsi_period: RSI period (default 14).
-            vwap_std_window: Rolling std window for VWAP bands (default 20).
-            vwap_band_multipliers: Std multipliers (default [1.0, 2.0]).
-
-        Returns:
-            JSON string with indicators appended to each bar record.
+        Compute all indicators and save enriched bar data to output_file.
         """
         if vwap_band_multipliers is None:
             vwap_band_multipliers = [1.0, 2.0]
 
         # ── Parse input ─────────────────────────────────────────
         try:
-            payload: dict = json.loads(market_data_json)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"Invalid JSON input: {exc}"})
+            with open(input_file, "r") as f:
+                payload = json.load(f)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to read raw market data file {input_file}: {e}"})
 
         if "error" in payload:
-            return market_data_json  # pass-through upstream errors
+            return json.dumps(payload)
 
         records: list[dict] = payload.get("full_data", [])
         if not records:
-            return json.dumps({"error": "full_data is empty."})
+            return json.dumps({"error": "full_data in market data file is empty."})
 
         # ── Build DataFrame ──────────────────────────────────────
         df = pd.DataFrame(records)
@@ -280,7 +266,21 @@ class IndicatorTool(BaseTool):
                 *[f"vwap_lower_{str(m).replace('.','_')}" for m in vwap_band_multipliers],
             ],
             "full_data": enriched_records,
+        }
+
+        try:
+            with open(output_file, "w") as f:
+                json.dump(result, f, default=str)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to save indicator data to {output_file}: {e}"})
+
+        # Return a small summary to avoid LLM context overflow
+        return_summary = {
+            "ticker": payload.get("ticker", "N/A"),
+            "interval": payload.get("interval", "N/A"),
+            "saved_to": output_file,
+            "summary": summary,
             "sample_tail": enriched_records[-10:],
         }
 
-        return json.dumps(result, default=str)
+        return json.dumps(return_summary, default=str)

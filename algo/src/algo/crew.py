@@ -22,22 +22,22 @@ def _progress_callback(task_output) -> None:
     raw = str(getattr(task_output, 'raw', task_output))
     preview = raw[:250].replace('\n', ' ')
     print(f"\n{'='*65}")
-    print(f"  ✅ COMPLETED [{ts}]  {label}")
+    print(f"  [OK] COMPLETED [{ts}]  {label}")
     print(f"  {preview}...")
     print(f"{'='*65}\n")
 
 
 # ─────────────────────────────────────────────────────────────
 # LM Studio — Local LLM Configuration
-# Uses OpenAI-compatible API at http://127.0.0.1:1234/v1
-# Model: google/gemma-4-e4b (as loaded in LM Studio)
+# Model: google/gemma-4-31b (31B 參數量，支援 tool calling)
 # ─────────────────────────────────────────────────────────────
 lm_studio_llm = LLM(
-    model="hosted_vllm/google/gemma-4-e4b",
+    model="hosted_vllm/google/gemma-4-31b",
     base_url="http://127.0.0.1:1234/v1",
-    api_key="lm-studio",       # dummy key — LM Studio does not validate
-    temperature=0.3,           # lower temp for more deterministic/analytical output
-    max_tokens=8192,           # ample room for detailed strategy documents
+    api_key="lm-studio",
+    temperature=0.2,           # lower = more deterministic tool calls
+    max_tokens=16384,          # 31B supports larger context
+    timeout=300,               # 5 min timeout for complex reasoning tasks
 )
 
 # ─────────────────────────────────────────────────────────────

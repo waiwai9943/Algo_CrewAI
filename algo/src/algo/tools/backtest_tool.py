@@ -34,12 +34,13 @@ from pydantic import BaseModel, Field
 class BacktestInput(BaseModel):
     """Input schema for BacktestTool."""
 
-    indicator_data_json: str = Field(
-        ...,
-        description=(
-            "JSON string returned by IndicatorTool. Must contain 'full_data' with "
-            "OHLCV + indicator columns (vwap, vwap_zscore, rsi, vwap_upper/lower bands)."
-        ),
+    input_file: str = Field(
+        default="indicator_data.json",
+        description="Local JSON file containing indicator-enriched bar data (output from IndicatorTool).",
+    )
+    output_file: str = Field(
+        default="backtest_results.json",
+        description="Local JSON file where detailed trade-by-trade logs and metrics will be saved.",
     )
     # ── Long entry ──────────────────────────────────────────────
     long_vwap_zscore_threshold: float = Field(
@@ -347,26 +348,25 @@ class BacktestTool(BaseTool):
     """
     Runs a vectorised intraday backtest of a VWAP+RSI mean-reversion strategy.
 
-    Requires indicator-enriched bar data from IndicatorTool as input.
-    Simulates next-bar execution with configurable TP/SL in ticks, slippage,
-    and commissions. Returns full performance metrics and trade log as JSON.
+    Requires indicator-enriched bar data saved in a local JSON file.
+    Simulates next-bar execution and saves detailed results to a local file.
     """
 
     name: str = "Strategy Backtester"
     description: str = (
         "Runs a vectorised intraday backtest of a VWAP+RSI strategy using "
-        "real historical bar data. Input must be the JSON output of IndicatorTool. "
-        "Accepts entry thresholds (VWAP z-score and RSI levels), take-profit and "
-        "stop-loss in ticks, and instrument (NQ or CL). "
-        "Returns: total trades, win rate, avg reward-to-risk, profit factor, "
-        "max drawdown, annualised Sharpe ratio, and a full trade log. "
-        "Use this to empirically validate strategy parameters before live deployment."
+        "historical bar data from a local indicator file. "
+        "Accepts entry thresholds, take-profit/stop-loss in ticks, and instrument. "
+        "Saves the detailed results and full trade log to a local file, "
+        "and returns a summary JSON with key performance metrics. "
+        "Use this to validate strategy parameters."
     )
     args_schema: Type[BaseModel] = BacktestInput
 
     def _run(
         self,
-        indicator_data_json: str,
+        input_file: str = "indicator_data.json",
+        output_file: str = "backtest_results.json",
         long_vwap_zscore_threshold: float = -1.5,
         long_rsi_threshold: float = 35.0,
         short_vwap_zscore_threshold: float = 1.5,
@@ -379,19 +379,20 @@ class BacktestTool(BaseTool):
         eod_exit_bar_from_end: int = 3,
     ) -> str:
         """
-        Execute backtest and return results as JSON string.
+        Execute backtest, save to file, and return summary JSON.
         """
         try:
-            payload: dict = json.loads(indicator_data_json)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"Invalid JSON: {exc}"})
+            with open(input_file, "r") as f:
+                payload = json.load(f)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to read indicator data file {input_file}: {e}"})
 
         if "error" in payload:
-            return indicator_data_json
+            return json.dumps(payload)
 
         records: list[dict] = payload.get("full_data", [])
         if not records:
-            return json.dumps({"error": "'full_data' is empty."})
+            return json.dumps({"error": "'full_data' in indicator file is empty."})
 
         df = pd.DataFrame(records)
         dt_col = "datetime" if "datetime" in df.columns else df.columns[0]
@@ -429,4 +430,23 @@ class BacktestTool(BaseTool):
             eod_exit_bar_from_end=eod_exit_bar_from_end,
         )
 
-        return json.dumps(results, default=str)
+        if "error" in results:
+            return json.dumps(results)
+
+        try:
+            with open(output_file, "w") as f:
+                json.dump(results, f, default=str)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to save backtest results to {output_file}: {e}"})
+
+        # Return a small summary to avoid LLM context overflow
+        return_summary = {
+            "instrument": results.get("instrument"),
+            "params": results.get("params"),
+            "performance": results.get("performance"),
+            "exit_reason_breakdown": results.get("exit_reason_breakdown"),
+            "saved_to": output_file,
+            "total_trades_saved": len(results.get("trade_log", [])),
+        }
+
+        return json.dumps(return_summary, default=str)

@@ -8,12 +8,14 @@ strategy_design_task:
         ticker = "NQ=F"
         period = "60d"
         interval = "5m"
+        output_file = "market_data.json"
       Examine the returned summary (total_bars, date_range, sample_tail) to understand
       the data quality and market conditions in the recent 60-day window.
 
     STEP 2 — Compute indicators:
-      Pass the full JSON output from Step 1 to the "Indicator Calculator" tool.
-      Use the following initial parameters (you may adjust after seeing the statistics):
+      Use the "Indicator Calculator" tool with:
+        input_file = "market_data.json"
+        output_file = "indicator_data.json"
         rsi_period = 14
         vwap_std_window = 20
         vwap_band_multipliers = [1.0, 2.0]
@@ -71,14 +73,14 @@ backtest_task:
     You have just designed the strategy specification in the previous task.
     Now you must empirically validate it using real historical data.
 
-    STEP 1 — Re-fetch and re-compute indicators (if needed):
-      If you do not have the indicator JSON in your context, call:
-        1. "Market Data Fetcher" (ticker="NQ=F", period="60d", interval="5m")
-        2. "Indicator Calculator" with rsi_period=14, vwap_std_window=20
+    STEP 1 — Use the existing indicator files directly:
+      Do NOT call the "Market Data Fetcher" or "Indicator Calculator" tools. They have already run in the previous task. The data has been successfully saved to "indicator_data.json". You must proceed directly to Step 2.
 
     STEP 2 — Run the primary backtest:
       Use the "Strategy Backtester" tool with the parameters from your
       strategy specification. Start with:
+        input_file: "indicator_data.json"
+        output_file: "backtest_results.json"
         long_vwap_zscore_threshold: [your chosen value from Task 1]
         long_rsi_threshold: [your chosen value from Task 1]
         short_vwap_zscore_threshold: [your chosen value from Task 1]
@@ -93,6 +95,7 @@ backtest_task:
       Test at least 2 variations of your thresholds (e.g., tighter/looser
       VWAP z-score, different RSI levels) to understand parameter sensitivity.
       Call "Strategy Backtester" for each variant and compare results.
+      Use different output filenames for each run (e.g. output_file="backtest_results_v1.json") so they do not overwrite each other.
 
     STEP 4 — Produce the Backtest Report:
       Summarise all backtest runs in a clear comparison table showing:
