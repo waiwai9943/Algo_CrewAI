@@ -36,7 +36,7 @@ lm_studio_llm = LLM(
     base_url="http://127.0.0.1:1234/v1",
     api_key="lm-studio",
     temperature=0.2,           # lower = more deterministic tool calls
-    max_tokens=16384,          # 31B supports larger context
+    max_tokens=4096,           # Set to 4096 to avoid exceeding LM Studio default context limit
     timeout=300,               # 5 min timeout for complex reasoning tasks
 )
 

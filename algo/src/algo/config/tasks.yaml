@@ -1,101 +1,81 @@
 strategy_design_task:
   description: >
     You are the Senior Quantitative Researcher. Your job is to design a rigorous
-    VWAP+RSI intraday trading strategy for NQ futures (ticker: NQ=F) on 5-minute bars.
+    trend-following and momentum breakout strategy for the Dow Jones (YM=F) or Crude Oil (CL=F) on 5-minute bars.
 
     STEP 1 — Fetch historical data:
-      Use the "Market Data Fetcher" tool with:
-        ticker = "NQ=F"
-        period = "60d"
-        interval = "5m"
-        output_file = "market_data.json"
-      Examine the returned summary (total_bars, date_range, sample_tail) to understand
-      the data quality and market conditions in the recent 60-day window.
+      Use the "Market Data Fetcher" tool to pull initial data for YM=F or CL=F,
+      or acknowledge the local datasets exported at:
+      - C:\QuantDataManager125\export\2026.6.7USA30IDXUSD-M5-No Session.csv
+      - C:\QuantDataManager125\export\2026.6.7LIGHTCMDUSD-M5-No Session.csv
 
     STEP 2 — Compute indicators:
-      Use the "Indicator Calculator" tool with:
+      Use the "Indicator Calculator" tool to compute trend-following indicators:
         input_file = "market_data.json"
         output_file = "indicator_data.json"
         rsi_period = 14
-        vwap_std_window = 20
-        vwap_band_multipliers = [1.0, 2.0]
+      (You may conceptualize other indicators like ADX, MACD, or Moving Average alignment
+       that you will instruct the engineer to build).
       Study the returned indicator statistics carefully:
-        - What % of bars have RSI < 30 or > 70? (oversold/overbought frequency)
-        - What % of bars have VWAP z-score < -1 or > +1? (band breach frequency)
-      These statistics will inform your threshold selection.
+        - What is the prevailing trend momentum?
+        - How often does the market trend versus chop?
 
     STEP 3 — Design the strategy specification:
-      Based on the actual indicator statistics from Step 2, produce a complete
+      Based on your momentum analysis, produce a complete
       strategy specification document with the following sections:
 
       A. PARAMETERS TABLE:
-         List all parameters with chosen values and justification based on data.
+         List all parameters (e.g., ADX thresholds, EMA lengths, MACD settings) 
+         with chosen values and justification.
 
-      B. ENTRY CONDITIONS (LONG):
-         Specify the exact VWAP z-score threshold, RSI threshold, and any
-         confirmation requirements. Justify each numeric choice with reference
-         to the indicator statistics from Step 2.
+      B. ENTRY CONDITIONS (LONG & SHORT):
+         Specify the exact momentum breakout and trend-following conditions.
+         For example: EMA alignment + ADX > 25 + Breakout of X-period high.
 
-      C. ENTRY CONDITIONS (SHORT):
-         Mirror logic for short entries.
+      C. EXIT CONDITIONS:
+         - Take-profit: Define wide take profits to capture massive trends (e.g., 100+ points).
+         - Stop-loss: Define a trailing stop or structure-based stop to avoid gap execution risks.
+         - EOD exit: specify cutoff in bars from session end.
 
-      D. EXIT CONDITIONS:
-         - Take-profit: define in ticks (NQ: 1 tick = $5, 0.25 points)
-         - Stop-loss: define in ticks
-         - EOD exit: specify cutoff in bars from session end
+      D. MARKET REGIME FILTER:
+         When should the strategy NOT trade? (e.g., choppy periods with ADX < 20).
 
-      E. MARKET REGIME FILTER:
-         When should the strategy NOT trade? (e.g., low-volume sessions,
-         first/last 15 minutes of RTH session)
+      E. STATISTICAL RATIONALE:
+         Explain why this trend-following edge works on the 5-minute NQ chart.
 
-      F. STATISTICAL RATIONALE:
-         Based on the indicator frequency statistics you observed, explain why
-         this combination of thresholds provides a mean-reversion edge.
-         Reference specific numbers from the indicator summary.
-
-    IMPORTANT: Your parameter choices MUST be grounded in the actual data statistics
-    returned by the tools. Do not invent numbers — derive them from what you observed.
+    IMPORTANT: Your parameter choices MUST be grounded in trend-following principles
+    designed to survive execution slippage and gaps. Do not use tight mean-reversion targets.
   expected_output: >
-    A structured strategy specification document with:
-    - Parameters table (all numeric values with data-driven justification)
-    - LONG entry conditions with exact VWAP z-score and RSI thresholds
-    - SHORT entry conditions (mirror)
-    - Exit rules (TP ticks, SL ticks, EOD cutoff)
-    - Market regime filter conditions
-    - Statistical rationale referencing actual indicator frequency data
-    The document should clearly state all threshold values so the backtester
-    can use them directly in the next task.
+    A validated trend-following strategy specification containing:
+    - Target instrument and timeframe justification (5-min)
+    - Indicator formulas (e.g., EMA, MACD, ADX)
+    - Specific Long/Short momentum entry logic
+    - Wide Target and Trailing Stop Loss logic
+    - Walk Forward Optimization (WFO) Research explanation
   agent: quant_researcher
 
 backtest_task:
   description: >
     You are the Senior Quantitative Researcher continuing your analysis.
-    You have just designed the strategy specification in the previous task.
-    Now you must empirically validate it using real historical data.
+    You have just designed the trend strategy specification.
+    Now you must formally structure a Backtest Plan for this trend strategy.
 
     STEP 1 — Use the existing indicator files directly:
-      Do NOT call the "Market Data Fetcher" or "Indicator Calculator" tools. They have already run in the previous task. The data has been successfully saved to "indicator_data.json". You must proceed directly to Step 2.
+      Do NOT call the "Market Data Fetcher" or "Indicator Calculator" tools. 
+      They have already run in the previous task. 
 
     STEP 2 — Run the primary backtest:
       Use the "Strategy Backtester" tool with the parameters from your
-      strategy specification. Start with:
-        input_file: "indicator_data.json"
-        output_file: "backtest_results.json"
-        long_vwap_zscore_threshold: [your chosen value from Task 1]
-        long_rsi_threshold: [your chosen value from Task 1]
-        short_vwap_zscore_threshold: [your chosen value from Task 1]
-        short_rsi_threshold: [your chosen value from Task 1]
-        take_profit_ticks: [your chosen value]
-        stop_loss_ticks: [your chosen value]
-        instrument: "NQ"
-        slippage_ticks: 1
+      trend strategy specification. Use wide targets and stops:
+        take_profit_ticks: 400  # 100 points
+        stop_loss_ticks: 100    # 25 points
+        instrument: "YM" or "CL"
+        slippage_ticks: 2       # Account for momentum slippage
         commission_per_rt: 4.10
 
     STEP 3 — Sensitivity analysis (run 2-3 additional parameter variants):
-      Test at least 2 variations of your thresholds (e.g., tighter/looser
-      VWAP z-score, different RSI levels) to understand parameter sensitivity.
-      Call "Strategy Backtester" for each variant and compare results.
-      Use different output filenames for each run (e.g. output_file="backtest_results_v1.json") so they do not overwrite each other.
+      Test at least 2 variations of your trend thresholds.
+      Use different output filenames for each run.
 
     STEP 4 — Produce the Backtest Report:
       Summarise all backtest runs in a clear comparison table showing:
@@ -104,28 +84,21 @@ backtest_task:
         - Net P&L ($), Profit Factor
         - Max Drawdown ($), Sharpe Ratio (annualised)
 
-      Then provide your recommendation:
-        - Which parameter set performed best? Why?
-        - Are the results statistically meaningful (enough trades)?
-        - What are the key risks you observed in the trade log?
-        - Recommended parameters for the strategy engineer to implement.
+      Then provide your recommendation.
   expected_output: >
-    A comprehensive Backtest Report containing:
+    A comprehensive Trend Following Backtest Report containing:
     - A comparison table of all tested parameter sets with full metrics
     - Identification of the best-performing parameter set with justification
-    - Assessment of statistical significance (number of trades, consistency)
-    - Key risk observations from the trade log (e.g., consecutive losses,
-      large single-trade drawdowns, EOD exits impact)
+    - Assessment of momentum execution risks (gaps, slippage)
     - Final recommended parameters for live implementation
-    All dollar amounts should reference NQ tick value ($5/tick = $20/point).
   agent: quant_researcher
   context:
     - strategy_design_task
 
 code_architecture_task:
   description: >
-    You are the Strategy Engineer. You have received the validated strategy
-    specification AND backtest results from the Quant Researcher (in your context).
+    You are the Strategy Engineer. You have received the validated trend-following strategy
+    specification AND backtest results from the Quant Researcher.
 
     Your job is to translate the empirically validated strategy into a complete
     Python code architecture blueprint using ib_insync for Interactive Brokers.
@@ -133,59 +106,25 @@ code_architecture_task:
     YOUR DELIVERABLE must include:
 
     1. IMPLEMENTABILITY REVIEW:
-       - Review the researcher's chosen parameters (from the backtest results).
-       - Flag any conditions that are ambiguous or could cause look-ahead bias.
-       - Note computational requirements for live execution (latency considerations).
+       - Review the researcher's chosen trend parameters.
+       - Note computational requirements for trailing stops or breakout conditions.
 
     2. MODULE STRUCTURE (directory tree):
          algo_live/
-           config.py          # All strategy parameters from backtest as constants
-           indicators.py      # VWAP, RSI, VWAP-band computation (matches backtest logic)
-           signal_engine.py   # Entry/exit signal generation
-           order_manager.py   # ib_insync order placement and management
-           data_handler.py    # ib_insync real-time bar subscription
+           config.py          # Trend strategy parameters
+           indicators.py      # Trend indicators (EMA, MACD, ADX, Donchian)
+           signal_engine.py   # Momentum signal generation
+           order_manager.py   # Trailing stops and bracket orders
+           data_handler.py    # ib_insync real-time 5-min bars
            risk_guard.py      # Pre-trade risk checks
            main_bot.py        # Main async event loop
 
     3. KEY CODE SKELETONS (actual Python, not pseudo-code):
-
-       a. config.py — dataclass with ALL parameters from backtest best run:
-          @dataclass
-          class StrategyConfig:
-              instrument: str
-              rsi_period: int
-              vwap_std_window: int
-              long_z_thresh: float
-              long_rsi_thresh: float
-              ... (all parameters)
-
-       b. indicators.py — must match backtest logic exactly:
-          - compute_session_vwap(df) -> pd.Series
-          - compute_vwap_zscore(close, vwap, window) -> pd.Series
-          - compute_rsi(close, period) -> pd.Series
-
-       c. data_handler.py — ib_insync real-time bar subscription:
-          - Contract definition for NQ (Future, 'NQ', 'CME')
-          - reqRealTimeBars or reqHistoricalData in streaming mode
-          - Bar accumulation into rolling DataFrame
-
-       d. signal_engine.py — wraps indicator logic into live signal generation
-
-       e. order_manager.py — bracket order via ib_insync with TP and SL
-
-    4. CRITICAL NOTES:
-       - Explain how the live VWAP resets at session open (09:30 ET for NQ).
-       - Explain bar timing: using confirmed closed bars only (no look-ahead).
-       - Specify the ib_insync async event loop pattern with asyncio.
+       Write skeletons for config.py, indicators.py, data_handler.py, signal_engine.py, and order_manager.py.
 
     Use type hints and docstrings throughout. Mark TODOs clearly.
   expected_output: >
-    A complete code architecture document with:
-    - Implementability review and any flagged issues
-    - Module structure directory tree
-    - Syntactically correct Python code skeletons for all 5 modules
-    - Critical implementation notes on VWAP reset, bar timing, async loop
-    - Requirements list (pip packages with versions)
+    A complete code architecture document for a Trend-Following system.
   agent: strategy_engineer
   context:
     - strategy_design_task
@@ -193,64 +132,21 @@ code_architecture_task:
 
 risk_review_task:
   description: >
-    You are the Chief Risk Officer. You have received the strategy specification,
+    You are the Chief Risk Officer. You have received the trend strategy specification,
     backtest results, AND the code architecture blueprint in your context.
 
-    Perform a comprehensive adversarial risk review of the ENTIRE pipeline.
+    Perform a comprehensive adversarial risk review focusing on overnight hold risks, 
+    false breakouts, and trend exhaustion.
 
     YOUR REVIEW must cover:
-
-    1. BACKTEST REALITY CHECK:
-       - Is the backtest sample size statistically significant?
-         (Rule of thumb: need ≥ 30 trades for basic significance, ≥ 100 for robust)
-       - What is the 60-day backtest's representativeness?
-         (60 days may cover only 1-2 market regimes; discuss out-of-sample risk)
-       - What does the max drawdown imply for a $50,000 account?
-         (Express as % of account equity)
-       - Is the Sharpe ratio reliable given the sample size?
-
-    2. STRATEGY-LEVEL FAILURE SCENARIOS (identify ≥ 3):
-       For each scenario, describe the market condition, how the strategy fails,
-       and the maximum estimated loss per scenario in NQ ticks and USD.
-
-    3. MANDATORY RISK CONTROLS (non-negotiable):
-       a. Per-trade stop-loss: confirm or override the researcher's SL ticks.
-          Justify based on ATR or session range considerations.
-       b. Daily drawdown circuit breaker: specify exact $ amount for a $50K account.
-          When triggered: flatten all, cancel orders, halt for remainder of session.
-       c. Maximum position: 1 contract max for accounts < $100K. State this explicitly.
-       d. Prohibited trading windows: first 15 min and last 15 min of RTH session.
-          (09:30-09:45 ET and 15:45-16:00 ET for NQ)
-       e. News event halt: FOMC, CPI, NFP — halt 5 min before, resume 10 min after.
-       f. Break-even analysis: at what win rate does the strategy break even
-          after commissions ($4.10/RT) and 1-tick slippage?
-
-    4. risk_guard.py CODE (actual Python, syntactically correct):
-       Implement these four functions:
-         def check_daily_drawdown(current_pnl: float, max_drawdown_limit: float) -> bool
-         def check_position_limit(current_positions: int, max_positions: int) -> bool
-         def check_session_time(current_time: datetime, allowed_windows: list[tuple]) -> bool
-         def emergency_flatten(ib: IB, portfolio: list) -> None  # uses ib_insync
-
-    5. RISK CONTROL ADDENDUM (formal numbered rules):
-       Format as a numbered list:
-         Rule 1 — [Name]: [Exact parameter] → [Automated consequence]
-         ...
-       Minimum 8 rules. Cover all mandatory controls plus any additional ones
-       you identify from the backtest trade log.
-
-    6. GO / NO-GO RECOMMENDATION:
-       For PAPER TRADING: Go or No-Go? State conditions.
-       For LIVE TRADING: What additional validation is required before live?
-       (Minimum suggestion: paper trade for 30 days with ≥ 30 trades, then review.)
+    1. BACKTEST REALITY CHECK: Is the win rate realistic for trend following? (Trend following often has 30-40% win rates with massive R:R).
+    2. STRATEGY-LEVEL FAILURE SCENARIOS: e.g., sideways chop markets grinding down the account.
+    3. MANDATORY RISK CONTROLS: Trailing stops, daily drawdown breaker.
+    4. risk_guard.py CODE (actual Python, syntactically correct).
+    5. RISK CONTROL ADDENDUM (formal numbered rules).
+    6. GO / NO-GO RECOMMENDATION.
   expected_output: >
-    A complete Risk Control Document containing:
-    - Backtest reality check with statistical significance assessment
-    - ≥3 failure scenarios with quantified loss estimates in ticks and USD
-    - All 6 mandatory risk controls with exact numeric parameters
-    - Complete risk_guard.py with 4 functions (syntactically correct Python)
-    - Numbered Risk Control Addendum (≥8 rules, formal mandatory format)
-    - Clear Go/No-Go recommendation for paper trading AND live trading
+    A complete Risk Control Document focusing on Trend-Following risks.
     Saved as the final deliverable: risk_control_addendum.md
   agent: risk_manager
   context:
