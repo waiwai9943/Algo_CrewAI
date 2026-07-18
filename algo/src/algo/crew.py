@@ -1,20 +1,28 @@
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
+from pydantic import BaseModel, Field
 
 from algo.tools.market_data_tool import MarketDataTool
 from algo.tools.indicator_tool import IndicatorTool
 from algo.tools.backtest_tool import BacktestTool
 
 
+class OverfittingAnalysis(BaseModel):
+    is_overfitted: bool = Field(..., description="True if the strategy is overfitted or does not meet criteria (e.g. Sharpe <= 1.0), False otherwise.")
+    sharpe_ratio: float = Field(..., description="The estimated annualized Sharpe ratio of the strategy.")
+    reasoning: str = Field(..., description="Detailed explanation/reasoning of the overfitting and performance evaluation.")
+
+
 def _progress_callback(task_output) -> None:
     """Inline progress printer — avoids circular import with main.py."""
     from datetime import datetime
     labels = {
-        "strategy_design_task" : "[1/4] Strategy Design",
-        "backtest_task"         : "[2/4] Historical Backtest",
-        "code_architecture_task": "[3/4] Code Architecture",
-        "risk_review_task"      : "[4/4] Risk Review",
+        "strategy_design_task" : "[1/5] Strategy Design",
+        "backtest_task"         : "[2/5] Historical Backtest",
+        "overfitting_analysis_task": "[3/5] Overfitting Analysis",
+        "code_architecture_task": "[4/5] Code Architecture",
+        "risk_review_task"      : "[5/5] Risk Review",
     }
     ts = datetime.now().strftime("%H:%M:%S")
     name = getattr(task_output, 'name', '') or ''
@@ -29,11 +37,12 @@ def _progress_callback(task_output) -> None:
 
 # ─────────────────────────────────────────────────────────────
 # LM Studio — Local LLM Configuration
-# Model: google/gemma-4-31b (31B 參數量，支援 tool calling)
+# Model: gemma-4-26b-a4b-qat
 # ─────────────────────────────────────────────────────────────
 lm_studio_llm = LLM(
-    model="hosted_vllm/google/gemma-4-31b",
-    base_url="http://127.0.0.1:1234/v1",
+    model="google/gemma-4-26b-a4b-qat",
+    provider="openai",
+    base_url="http://192.168.18.10:1234/v1",
     api_key="lm-studio",
     temperature=0.2,           # lower = more deterministic tool calls
     max_tokens=4096,           # Set to 4096 to avoid exceeding LM Studio default context limit
@@ -53,17 +62,18 @@ class Algo():
     """
     Algo — Virtual Quantitative Hedge Fund Crew
 
-    A four-task sequential pipeline that designs, backtests with real data,
-    engineers, and stress-tests an intraday futures trading strategy
-    (VWAP + RSI on 5-minute bars) for NQ (E-mini Nasdaq-100) futures.
+    A sequential pipeline that designs, backtests with 10-year data (WFO),
+    engineers, and stress-tests an intraday + swing futures trading strategy
+    (Donchian Channel Breakout + EMA on 5-minute bars) for NQ (Nasdaq-100) futures.
 
-    LLM Backend: LM Studio (http://127.0.0.1:1234) — google/gemma-4-e4b
+    LLM Backend: LM Studio (http://192.168.18.10:1234) — google/gemma-4-26b-a4b-qat
 
     Pipeline (Sequential):
         1. quant_researcher  [strategy_design_task]  → Designs strategy using real data
-        2. quant_researcher  [backtest_task]          → Validates with historical backtest
-        3. strategy_engineer [code_architecture_task] → Python/ib_insync code blueprint
-        4. risk_manager      [risk_review_task]       → Risk review + Risk Control Addendum
+        2. quant_researcher  [backtest_task]          → Validates with 10-year walk-forward optimization
+        3. overfitting_analyst [overfitting_analysis_task] → Validates out-of-sample performance
+        4. strategy_engineer [code_architecture_task] → Python/ib_insync code blueprint
+        5. risk_manager      [risk_review_task]       → Risk review + Risk Control Addendum
     """
 
     agents: list[BaseAgent]
@@ -114,6 +124,18 @@ class Algo():
             verbose=True,
         )
 
+    @agent
+    def overfitting_analyst(self) -> Agent:
+        """
+        Agent D — Lead Overfitting Analyst & Validation Engineer
+        Assesses if the proposed strategy has an actual edge or is overfitted to noise.
+        """
+        return Agent(
+            config=self.agents_config['overfitting_analyst'],  # type: ignore[index]
+            llm=lm_studio_llm,
+            verbose=True,
+        )
+
     # ─────────────────────────────────────────────
     # TASKS
     # ─────────────────────────────────────────────
@@ -137,6 +159,18 @@ class Algo():
         """
         return Task(
             config=self.tasks_config['backtest_task'],  # type: ignore[index]
+            callback=_progress_callback,
+        )
+
+    @task
+    def overfitting_analysis_task(self) -> Task:
+        """
+        Task 3: Overfitting Analyst reviews the backtests and walk forward results,
+        detecting parameter overfitting and data-snooping bias.
+        """
+        return Task(
+            config=self.tasks_config['overfitting_analysis_task'],  # type: ignore[index]
+            output_pydantic=OverfittingAnalysis,
             callback=_progress_callback,
         )
 

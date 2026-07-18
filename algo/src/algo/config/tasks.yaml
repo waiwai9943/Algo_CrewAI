@@ -1,130 +1,109 @@
 strategy_design_task:
   description: >
     You are the Senior Quantitative Researcher. Your job is to design a rigorous
-    trend-following and momentum breakout strategy for the Dow Jones (YM=F) or Crude Oil (CL=F) on 5-minute bars.
+    intraday + swing trading breakout strategy for the Nasdaq-100 (NQ/USATECH) or Crude Oil (CL/LIGHTCMD) using historical bars.
 
     STEP 1 — Fetch historical data:
-      Use the "Market Data Fetcher" tool to pull initial data for YM=F or CL=F,
-      or acknowledge the local datasets exported at:
-      - C:\QuantDataManager125\export\2026.6.7USA30IDXUSD-M5-No Session.csv
-      - C:\QuantDataManager125\export\2026.6.7LIGHTCMDUSD-M5-No Session.csv
+      Use the "Market Data Fetcher" tool to pull 10-year data for "NQ" or "CL".
+      It will automatically detect and load the local 10-year CSV files if available.
 
-    STEP 2 — Compute indicators:
-      Use the "Indicator Calculator" tool to compute trend-following indicators:
+    STEP 2 — Compute breakout indicators:
+      Use the "Indicator Calculator" tool to compute the new strategy indicators:
         input_file = "market_data.json"
         output_file = "indicator_data.json"
-        rsi_period = 14
-      (You may conceptualize other indicators like ADX, MACD, or Moving Average alignment
-       that you will instruct the engineer to build).
-      Study the returned indicator statistics carefully:
-        - What is the prevailing trend momentum?
-        - How often does the market trend versus chop?
+        donchian_period = 20
+        ema_period = 200
+        atr_period = 14
 
     STEP 3 — Design the strategy specification:
-      Based on your momentum analysis, produce a complete
-      strategy specification document with the following sections:
-
+      Based on your breakout analysis, produce a complete strategy specification document with the following sections:
+      
       A. PARAMETERS TABLE:
-         List all parameters (e.g., ADX thresholds, EMA lengths, MACD settings) 
-         with chosen values and justification.
-
+         List all parameters (Donchian period, EMA filter length, ATR multipliers) with chosen values and justification.
+      
       B. ENTRY CONDITIONS (LONG & SHORT):
-         Specify the exact momentum breakout and trend-following conditions.
-         For example: EMA alignment + ADX > 25 + Breakout of X-period high.
-
+         Specify the exact breakout entry conditions:
+         - LONG: Close crosses above the upper Donchian Channel AND Close > EMA.
+         - SHORT: Close crosses below the lower Donchian Channel AND Close < EMA.
+      
       C. EXIT CONDITIONS:
-         - Take-profit: Define wide take profits to capture massive trends (e.g., 100+ points).
-         - Stop-loss: Define a trailing stop or structure-based stop to avoid gap execution risks.
-         - EOD exit: specify cutoff in bars from session end.
-
-      D. MARKET REGIME FILTER:
-         When should the strategy NOT trade? (e.g., choppy periods with ADX < 20).
-
-      E. STATISTICAL RATIONALE:
-         Explain why this trend-following edge works on the 5-minute NQ chart.
-
-    IMPORTANT: Your parameter choices MUST be grounded in trend-following principles
-    designed to survive execution slippage and gaps. Do not use tight mean-reversion targets.
+         - Stop-loss: ATR-based stop (e.g. 2.0 * ATR) to protect capital.
+         - Take-profit: ATR-based target (e.g. 4.0 * ATR) to capture swing trends.
+         - EOD exit: Set to 0 to disable EOD exits and hold positions overnight for swing trading.
+      
+      D. STATISTICAL RATIONALE:
+         Explain why a trend-following channel breakout edge is highly robust on the 5-minute chart and less prone to overfitting.
   expected_output: >
-    A validated trend-following strategy specification containing:
+    A validated swing + intraday breakout strategy specification containing:
     - Target instrument and timeframe justification (5-min)
-    - Indicator formulas (e.g., EMA, MACD, ADX)
-    - Specific Long/Short momentum entry logic
-    - Wide Target and Trailing Stop Loss logic
-    - Walk Forward Optimization (WFO) Research explanation
+    - Indicator settings (Donchian, EMA, ATR)
+    - Specific Long/Short breakout entry logic
+    - ATR-based Stop Loss and Take Profit levels
+    - Swing holding/overnight risk explanation
   agent: quant_researcher
 
 backtest_task:
   description: >
     You are the Senior Quantitative Researcher continuing your analysis.
-    You have just designed the trend strategy specification.
-    Now you must formally structure a Backtest Plan for this trend strategy.
+    You have just designed the breakout strategy specification.
+    Now you must execute a Walk-Forward Optimization (WFO) backtest on the 10-year data to validate robustness.
 
-    STEP 1 — Use the existing indicator files directly:
-      Do NOT call the "Market Data Fetcher" or "Indicator Calculator" tools. 
-      They have already run in the previous task. 
+    STEP 1 — Run the walk-forward optimization:
+      Use the "Strategy Backtester" tool with:
+        instrument: "NQ" or "CL"
+        run_walk_forward: true
+        donchian_period: 20
+        ema_period: 200
+        atr_period: 14
+        sl_atr_multiplier: 2.0
+        tp_atr_multiplier: 4.0
+        eod_exit_bar_from_end: 0  # Enable swing trade holding
 
-    STEP 2 — Run the primary backtest:
-      Use the "Strategy Backtester" tool with the parameters from your
-      trend strategy specification. Use wide targets and stops:
-        take_profit_ticks: 400  # 100 points
-        stop_loss_ticks: 100    # 25 points
-        instrument: "YM" or "CL"
-        slippage_ticks: 2       # Account for momentum slippage
-        commission_per_rt: 4.10
+    STEP 2 — Analyze walk-forward results:
+      Examine the generated walk-forward steps.
+      Review the In-Sample (IS) optimal parameters and their Out-of-Sample (OOS) performance.
+      Identify any performance degradation between IS and OOS.
 
-    STEP 3 — Sensitivity analysis (run 2-3 additional parameter variants):
-      Test at least 2 variations of your trend thresholds.
-      Use different output filenames for each run.
-
-    STEP 4 — Produce the Backtest Report:
-      Summarise all backtest runs in a clear comparison table showing:
-        - Parameter set used
-        - Total trades, Win Rate %, Avg R:R
-        - Net P&L ($), Profit Factor
-        - Max Drawdown ($), Sharpe Ratio (annualised)
-
-      Then provide your recommendation.
+    STEP 3 — Produce the Backtest Report:
+      Summarise the WFO results in a clear table showing:
+        - Walk-forward step windows (IS/OOS dates)
+        - Optimal parameters found per step
+        - OOS Trades count, OOS Net P&L ($)
+        - Final stitched Out-of-Sample metrics (Total trades, Win Rate %, Profit Factor, Max Drawdown, Sharpe Ratio).
   expected_output: >
-    A comprehensive Trend Following Backtest Report containing:
-    - A comparison table of all tested parameter sets with full metrics
-    - Identification of the best-performing parameter set with justification
-    - Assessment of momentum execution risks (gaps, slippage)
-    - Final recommended parameters for live implementation
+    A comprehensive Walk-Forward Optimization Backtest Report containing:
+    - A comparison table of all walk-forward steps
+    - Final stitched Out-of-Sample performance metrics
+    - Assessment of swing trade holding risk (overnight gaps, leverage)
+    - Final recommended strategy parameters
   agent: quant_researcher
   context:
     - strategy_design_task
 
 code_architecture_task:
   description: >
-    You are the Strategy Engineer. You have received the validated trend-following strategy
-    specification AND backtest results from the Quant Researcher.
+    You are the Strategy Engineer. You have received the validated breakout strategy
+    specification AND walk-forward backtest results from the Quant Researcher.
 
-    Your job is to translate the empirically validated strategy into a complete
+    Your job is to translate the breakout strategy into a complete
     Python code architecture blueprint using ib_insync for Interactive Brokers.
 
     YOUR DELIVERABLE must include:
-
     1. IMPLEMENTABILITY REVIEW:
-       - Review the researcher's chosen trend parameters.
-       - Note computational requirements for trailing stops or breakout conditions.
-
+       - Computational requirements for real-time Donchian Channels and ATR-based stops.
     2. MODULE STRUCTURE (directory tree):
          algo_live/
-           config.py          # Trend strategy parameters
-           indicators.py      # Trend indicators (EMA, MACD, ADX, Donchian)
-           signal_engine.py   # Momentum signal generation
-           order_manager.py   # Trailing stops and bracket orders
+           config.py          # Strategy parameters
+           indicators.py      # Donchian, EMA, ATR indicators
+           signal_engine.py   # Breakout signal engine
+           order_manager.py   # ATR stops and bracket orders (overnight resilient)
            data_handler.py    # ib_insync real-time 5-min bars
            risk_guard.py      # Pre-trade risk checks
            main_bot.py        # Main async event loop
-
     3. KEY CODE SKELETONS (actual Python, not pseudo-code):
        Write skeletons for config.py, indicators.py, data_handler.py, signal_engine.py, and order_manager.py.
-
-    Use type hints and docstrings throughout. Mark TODOs clearly.
   expected_output: >
-    A complete code architecture document for a Trend-Following system.
+    A complete code architecture document for the Donchian breakout system.
   agent: strategy_engineer
   context:
     - strategy_design_task
@@ -132,24 +111,43 @@ code_architecture_task:
 
 risk_review_task:
   description: >
-    You are the Chief Risk Officer. You have received the trend strategy specification,
-    backtest results, AND the code architecture blueprint in your context.
+    You are the Chief Risk Officer. You have received the breakout strategy specification,
+    walk-forward results, AND the code architecture blueprint in your context.
 
-    Perform a comprehensive adversarial risk review focusing on overnight hold risks, 
-    false breakouts, and trend exhaustion.
+    Perform a comprehensive adversarial risk review focusing on overnight holding (swing) risks,
+    false breakouts, and execution slippage.
 
     YOUR REVIEW must cover:
-    1. BACKTEST REALITY CHECK: Is the win rate realistic for trend following? (Trend following often has 30-40% win rates with massive R:R).
-    2. STRATEGY-LEVEL FAILURE SCENARIOS: e.g., sideways chop markets grinding down the account.
-    3. MANDATORY RISK CONTROLS: Trailing stops, daily drawdown breaker.
+    1. BACKTEST REALITY CHECK: Is the win rate realistic for a breakout strategy?
+    2. STRATEGY-LEVEL FAILURE SCENARIOS: e.g., overnight gap risk executing stop losses at extreme prices.
+    3. MANDATORY RISK CONTROLS: Trailing ATR stop, max leverage, daily drawdown breaker.
     4. risk_guard.py CODE (actual Python, syntactically correct).
     5. RISK CONTROL ADDENDUM (formal numbered rules).
     6. GO / NO-GO RECOMMENDATION.
   expected_output: >
-    A complete Risk Control Document focusing on Trend-Following risks.
+    A complete Risk Control Document focusing on Breakout and Swing Trading risks.
     Saved as the final deliverable: risk_control_addendum.md
   agent: risk_manager
   context:
     - strategy_design_task
     - backtest_task
     - code_architecture_task
+
+overfitting_analysis_task:
+  description: >
+    You are the Lead Overfitting Analyst. Review the backtest results and walk-forward analysis output.
+    Compare In-Sample (IS) metrics against Out-of-Sample (OOS) performance across the WFO steps.
+    Specifically:
+    1. Check for significant degradation in performance (e.g., OOS Sharpe drops by more than 50% vs IS, or Win Rate drops significantly).
+    2. Check if the overall stitched Out-of-Sample annualized Sharpe ratio exceeds 1.0.
+    3. Evaluate if the parameters are too finely tuned to noise.
+    4. Provide a definitive validation verdict: is the strategy overfitted?
+    
+    If the strategy fails to achieve a validated OOS Sharpe ratio > 1.0, or if it is overfitted, explicitly set is_overfitted to true.
+    You must also check if there are previous attempts listed in the inputs; if so, verify that the new strategy is substantially different and avoids the issues of those prior attempts.
+  expected_output: >
+    A structured overfitting and validation analysis report containing the overfitting status, computed Sharpe ratio, and reasoning.
+  agent: overfitting_analyst
+  context:
+    - strategy_design_task
+    - backtest_task

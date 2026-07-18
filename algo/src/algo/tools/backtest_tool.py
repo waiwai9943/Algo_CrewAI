@@ -42,42 +42,26 @@ class BacktestInput(BaseModel):
         default="backtest_results.json",
         description="Local JSON file where detailed trade-by-trade logs and metrics will be saved.",
     )
-    # ── Long entry ──────────────────────────────────────────────
-    long_vwap_zscore_threshold: float = Field(
-        default=-1.5,
-        description=(
-            "VWAP z-score must be BELOW this value to trigger a long entry. "
-            "Negative values mean price is below VWAP. Default: -1.5."
-        ),
-    )
-    long_rsi_threshold: float = Field(
-        default=35.0,
-        description="RSI must be BELOW this value to confirm long entry. Default: 35.",
-    )
-    # ── Short entry ─────────────────────────────────────────────
-    short_vwap_zscore_threshold: float = Field(
-        default=1.5,
-        description=(
-            "VWAP z-score must be ABOVE this value to trigger a short entry. Default: 1.5."
-        ),
-    )
-    short_rsi_threshold: float = Field(
-        default=65.0,
-        description="RSI must be ABOVE this value to confirm short entry. Default: 65.",
-    )
-    # ── Exit ────────────────────────────────────────────────────
-    take_profit_ticks: int = Field(
+    donchian_period: int = Field(
         default=20,
-        description=(
-            "Take-profit distance in ticks from entry price. "
-            "NQ tick = $5 (0.25 pts). CL tick = $10 (0.01 pts)."
-        ),
+        description="Donchian Channel lookback period. Default: 20.",
     )
-    stop_loss_ticks: int = Field(
-        default=12,
-        description="Stop-loss distance in ticks from entry price.",
+    ema_period: int = Field(
+        default=200,
+        description="Exponential Moving Average period for trend filtering. Default: 200.",
     )
-    # ── Instrument spec ─────────────────────────────────────────
+    atr_period: int = Field(
+        default=14,
+        description="Average True Range (ATR) period. Default: 14.",
+    )
+    sl_atr_multiplier: float = Field(
+        default=2.0,
+        description="ATR multiplier for Stop Loss. Default: 2.0.",
+    )
+    tp_atr_multiplier: float = Field(
+        default=4.0,
+        description="ATR multiplier for Take Profit. Default: 4.0.",
+    )
     instrument: str = Field(
         default="NQ",
         description="'NQ' or 'CL'. Determines tick size and dollar value.",
@@ -91,11 +75,15 @@ class BacktestInput(BaseModel):
         description="Round-trip commission per contract in USD. IB default: $4.10.",
     )
     eod_exit_bar_from_end: int = Field(
-        default=3,
+        default=0,
         description=(
             "Bars before session end to force-close any open position. "
-            "Default: 3 bars before EOD = 15 minutes before close."
+            "Set to 0 to disable EOD flat (enable overnight swing trading). Default: 0."
         ),
+    )
+    run_walk_forward: bool = Field(
+        default=True,
+        description="If True, runs a 10-year Walk-Forward Optimization (WFO) to avoid overfitting. Default: True.",
     )
 
 
@@ -123,54 +111,65 @@ INSTRUMENT_SPECS: dict[str, dict] = {
 
 def run_backtest(
     df: pd.DataFrame,
-    long_z_thresh: float,
-    long_rsi_thresh: float,
-    short_z_thresh: float,
-    short_rsi_thresh: float,
-    tp_ticks: int,
-    sl_ticks: int,
+    donchian_period: int,
+    ema_period: int,
+    sl_atr_mult: float,
+    tp_atr_mult: float,
     instrument: str,
     slippage_ticks: int,
     commission_rt: float,
     eod_exit_bar_from_end: int,
 ) -> dict:
     """
-    Vectorised single-contract backtest of a VWAP+RSI mean-reversion strategy.
+    Vectorised backtest of a Donchian Breakout + EMA strategy.
 
     Entry logic (next-bar open execution):
-        LONG : vwap_zscore < long_z_thresh AND rsi < long_rsi_thresh
-        SHORT: vwap_zscore > short_z_thresh AND rsi > short_rsi_thresh
+        LONG : close > ema AND close > donchian_high.shift(1)
+        SHORT: close < ema AND close < donchian_low.shift(1)
 
     Exit logic (whichever comes first):
-        - Take-profit: price moves tp_ticks in favour
-        - Stop-loss:   price moves sl_ticks against
-        - EOD:         last `eod_exit_bar_from_end` bars of each session
-
-    Returns:
-        Dict with trade log and aggregated performance metrics.
+        - Take-profit: price moves tp_atr_mult * ATR in favour
+        - Stop-loss:   price moves sl_atr_mult * ATR against
+        - EOD (optional): last `eod_exit_bar_from_end` bars of each session
     """
     spec = INSTRUMENT_SPECS.get(instrument.upper(), INSTRUMENT_SPECS["NQ"])
     tick_size = spec["tick_size"]
     tick_val = spec["tick_value_usd"]
+    point_val = spec["point_value_usd"]
 
     df = df.copy()
     df.index = pd.to_datetime(df.index)
 
-    # Build session-end mask
-    session_dates = df["session_date"].unique() if "session_date" in df.columns else [None]
-    eod_mask = pd.Series(False, index=df.index)
-    for date in session_dates:
-        if date is None:
-            continue
-        day_bars = df[df["session_date"] == date]
-        if len(day_bars) <= eod_exit_bar_from_end:
-            eod_mask.loc[day_bars.index] = True
-        else:
-            eod_mask.loc[day_bars.index[-eod_exit_bar_from_end:]] = True
+    # Shift donchian channel boundaries to avoid lookahead bias
+    df["donchian_high_prev"] = df["donchian_high"].shift(1)
+    df["donchian_low_prev"] = df["donchian_low"].shift(1)
 
-    # Entry signals on current bar; execute on NEXT bar's open
-    long_signal = (df["vwap_zscore"] < long_z_thresh) & (df["rsi"] < long_rsi_thresh)
-    short_signal = (df["vwap_zscore"] > short_z_thresh) & (df["rsi"] > short_rsi_thresh)
+    # Build session-end mask if eod_exit is active
+    eod_mask = pd.Series(False, index=df.index)
+    if eod_exit_bar_from_end > 0:
+        session_dates = df["session_date"].unique() if "session_date" in df.columns else [None]
+        for date in session_dates:
+            if date is None:
+                continue
+            day_bars = df[df["session_date"] == date]
+            if len(day_bars) <= eod_exit_bar_from_end:
+                eod_mask.loc[day_bars.index] = True
+            else:
+                eod_mask.loc[day_bars.index[-eod_exit_bar_from_end:]] = True
+
+    # Signal definitions
+    long_signal = (df["close"] > df["ema"]) & (df["close"] > df["donchian_high_prev"])
+    short_signal = (df["close"] < df["ema"]) & (df["close"] < df["donchian_low_prev"])
+
+    # Convert to numpy arrays for maximum performance
+    opens = df["open"].values
+    highs = df["high"].values
+    lows = df["low"].values
+    closes = df["close"].values
+    atrs = df["atr"].values
+    eod_mask_vals = eod_mask.values
+    long_signal_vals = long_signal.values
+    short_signal_vals = short_signal.values
 
     trades: list[dict] = []
     position: str | None = None   # 'long', 'short', or None
@@ -179,15 +178,14 @@ def run_backtest(
     tp_price: float = 0.0
     sl_price: float = 0.0
 
-    bars = list(df.itertuples())
-    n = len(bars)
+    n = len(df)
 
-    for i, bar in enumerate(bars):
+    for i in range(n):
         # ── Check exit conditions for open position ──────────────
         if position is not None:
-            is_eod = eod_mask.iloc[i]
-            high = float(bar.high)
-            low = float(bar.low)
+            is_eod = eod_mask_vals[i]
+            high = highs[i]
+            low = lows[i]
             exit_price: float | None = None
             exit_reason: str = ""
 
@@ -199,7 +197,7 @@ def run_backtest(
                     exit_price = sl_price
                     exit_reason = "stop_loss"
                 elif is_eod:
-                    exit_price = float(bar.open)
+                    exit_price = opens[i]
                     exit_reason = "eod_flat"
             else:  # short
                 if low <= tp_price:
@@ -209,7 +207,7 @@ def run_backtest(
                     exit_price = sl_price
                     exit_reason = "stop_loss"
                 elif is_eod:
-                    exit_price = float(bar.open)
+                    exit_price = opens[i]
                     exit_reason = "eod_flat"
 
             if exit_price is not None:
@@ -217,53 +215,44 @@ def run_backtest(
                     (exit_price - entry_price) if position == "long"
                     else (entry_price - exit_price)
                 )
-                # Apply slippage (adverse on both legs)
                 slip_cost = slippage_ticks * tick_val * 2
-                pnl_usd = (raw_pnl_pts / tick_size) * tick_val - commission_rt - slip_cost
+                pnl_usd = (raw_pnl_pts * point_val) - commission_rt - slip_cost
 
                 trades.append({
                     "direction": position,
-                    "entry_bar": str(bars[entry_bar_idx].Index),
-                    "exit_bar": str(bar.Index),
+                    "entry_bar": str(df.index[entry_bar_idx]),
+                    "exit_bar": str(df.index[i]),
                     "entry_price": round(entry_price, 4),
                     "exit_price": round(exit_price, 4),
                     "exit_reason": exit_reason,
                     "pnl_usd": round(pnl_usd, 2),
-                    "pnl_ticks": round(raw_pnl_pts / tick_size, 1),
+                    "pnl_points": round(raw_pnl_pts, 4),
                 })
                 position = None
 
         # ── Check entry signals for new position (next bar execution) ──
-        if position is None and i < n - 1 and not eod_mask.iloc[i]:
-            next_bar = bars[i + 1]
-            exec_price = float(next_bar.open)
+        if position is None and i < n - 1 and not eod_mask_vals[i]:
+            exec_price = opens[i + 1]
+            atr_val = atrs[i]
 
-            if long_signal.iloc[i]:
+            if long_signal_vals[i] and atr_val > 0 and not np.isnan(atr_val):
                 position = "long"
-                entry_price = exec_price + slippage_ticks * tick_size  # adverse slip
-                tp_price = entry_price + tp_ticks * tick_size
-                sl_price = entry_price - sl_ticks * tick_size
+                # Slippage added to entry price
+                entry_price = exec_price + slippage_ticks * tick_size
+                tp_price = entry_price + tp_atr_mult * atr_val
+                sl_price = entry_price - sl_atr_mult * atr_val
                 entry_bar_idx = i + 1
 
-            elif short_signal.iloc[i]:
+            elif short_signal_vals[i] and atr_val > 0 and not np.isnan(atr_val):
                 position = "short"
-                entry_price = exec_price - slippage_ticks * tick_size  # adverse slip
-                tp_price = entry_price - tp_ticks * tick_size
-                sl_price = entry_price + sl_ticks * tick_size
+                # Slippage subtracted from entry price
+                entry_price = exec_price - slippage_ticks * tick_size
+                tp_price = entry_price - tp_atr_mult * atr_val
+                sl_price = entry_price + sl_atr_mult * atr_val
                 entry_bar_idx = i + 1
 
     if not trades:
-        return {
-            "error": "No trades generated. Check signal thresholds — they may be too restrictive.",
-            "params": {
-                "long_z_thresh": long_z_thresh,
-                "long_rsi_thresh": long_rsi_thresh,
-                "short_z_thresh": short_z_thresh,
-                "short_rsi_thresh": short_rsi_thresh,
-                "tp_ticks": tp_ticks,
-                "sl_ticks": sl_ticks,
-            },
-        }
+        return {"error": "No trades generated."}
 
     # ── Aggregate metrics ─────────────────────────────────────
     pnls = [t["pnl_usd"] for t in trades]
@@ -288,37 +277,22 @@ def run_backtest(
     drawdown = equity - peak
     max_drawdown = float(np.min(drawdown))
 
-    # Annualised Sharpe (assuming ~252 trading days, ~78 bars/day for 5-min RTH)
-    pnl_arr = np.array(pnls)
-    daily_pnl: list[float] = []
-    trade_df = pd.DataFrame(trades)
-    trade_df["exit_bar"] = pd.to_datetime(trade_df["exit_bar"])
-    trade_df["exit_date"] = trade_df["exit_bar"].dt.date
-    for date, grp in trade_df.groupby("exit_date"):
-        daily_pnl.append(grp["pnl_usd"].sum())
+    # Annualised Sharpe ratio based on daily returns in pure Python
+    daily_totals: dict[str, float] = {}
+    for t in trades:
+        # Extract YYYY-MM-DD date string from exit_bar string
+        date_str = t["exit_bar"][:10]
+        daily_totals[date_str] = daily_totals.get(date_str, 0.0) + t["pnl_usd"]
 
+    daily_pnl = list(daily_totals.values())
     if len(daily_pnl) > 1:
         daily_arr = np.array(daily_pnl)
         sharpe = (np.mean(daily_arr) / (np.std(daily_arr) + 1e-9)) * np.sqrt(252)
     else:
-        sharpe = float("nan")
-
-    by_reason = trade_df.groupby("exit_reason")["pnl_usd"].agg(["count", "sum", "mean"])
+        sharpe = 0.0
 
     return {
         "instrument": instrument,
-        "params": {
-            "long_vwap_zscore_threshold": long_z_thresh,
-            "long_rsi_threshold": long_rsi_thresh,
-            "short_vwap_zscore_threshold": short_z_thresh,
-            "short_rsi_threshold": short_rsi_thresh,
-            "take_profit_ticks": tp_ticks,
-            "take_profit_usd": round(tp_ticks * tick_val, 2),
-            "stop_loss_ticks": sl_ticks,
-            "stop_loss_usd": round(sl_ticks * tick_val, 2),
-            "slippage_ticks": slippage_ticks,
-            "commission_per_rt_usd": commission_rt,
-        },
         "performance": {
             "total_trades": n_trades,
             "winning_trades": n_win,
@@ -332,10 +306,184 @@ def run_backtest(
             "net_pnl_usd": round(sum(pnls), 2),
             "profit_factor": round(profit_factor, 3) if not math.isinf(profit_factor) else "inf",
             "max_drawdown_usd": round(max_drawdown, 2),
-            "sharpe_ratio_annualised": round(float(sharpe), 3) if not math.isnan(sharpe) else "N/A",
+            "sharpe_ratio_annualised": round(float(sharpe), 3) if not math.isnan(sharpe) else 0.0,
         },
-        "exit_reason_breakdown": by_reason.to_dict(),
-        "trade_log": trades,     # full trade-by-trade log
+        "trade_log": trades,
+        "equity_curve": [round(float(e), 2) for e in equity.tolist()],
+    }
+
+
+# ─────────────────────────────────────────────
+# Walk-Forward Optimization
+# ─────────────────────────────────────────────
+
+def run_wfo_optimization(
+    df: pd.DataFrame,
+    instrument: str,
+    slippage_ticks: int,
+    commission_rt: float,
+    eod_exit_bar_from_end: int,
+) -> dict:
+    """
+    Executes Walk-Forward Optimization (WFO) over a 10-year period (2016-2026).
+    """
+    df = df.copy()
+    df.index = pd.to_datetime(df.index)
+
+    # Walk-forward settings: utilize the 10-year period 2016 to 2026.
+    # We train on 2-year In-Sample windows and walk forward in 1-year steps.
+    start_test_date = pd.to_datetime("2016-01-01")
+    end_date = df.index.max()
+    
+    is_window = pd.DateOffset(years=2)
+    oos_window = pd.DateOffset(years=1)
+    
+    current_date = start_test_date
+    
+    # Larger Donchian period grid search space [40, 60, 80, 100] to reduce trade frequency
+    # and fit a robust intraday/swing breakout trading style.
+    donchian_grid = [40, 60, 80, 100]
+    sl_grid = [2.5, 3.5, 4.5]
+    tp_grid = [5.0, 7.5, 10.0]
+    
+    all_oos_trades = []
+    wfo_steps = []
+    
+    while current_date < end_date:
+        train_start = current_date - is_window
+        train_end = current_date
+        test_end = current_date + oos_window
+        
+        df_is = df[(df.index >= train_start) & (df.index < train_end)]
+        df_oos = df[(df.index >= train_end) & (df.index < test_end)]
+        
+        if len(df_is) < 200 or len(df_oos) < 50:
+            current_date = test_end
+            continue
+            
+        best_sharpe = -float("inf")
+        best_params = (40, 2.0, 4.0)
+        
+        # Optimize on In-Sample
+        for dp in donchian_grid:
+            df_is_temp = df_is.copy()
+            df_is_temp["donchian_high"] = df_is_temp["high"].rolling(window=dp).max()
+            df_is_temp["donchian_low"] = df_is_temp["low"].rolling(window=dp).min()
+            
+            for sl in sl_grid:
+                for tp in tp_grid:
+                    res = run_backtest(
+                        df=df_is_temp,
+                        donchian_period=dp,
+                        ema_period=200,
+                        sl_atr_mult=sl,
+                        tp_atr_mult=tp,
+                        instrument=instrument,
+                        slippage_ticks=slippage_ticks,
+                        commission_rt=commission_rt,
+                        eod_exit_bar_from_end=eod_exit_bar_from_end,
+                    )
+                    if "error" not in res:
+                        sharpe = res["performance"]["sharpe_ratio_annualised"]
+                        if sharpe > best_sharpe:
+                            best_sharpe = sharpe
+                            best_params = (dp, sl, tp)
+                            
+        # Run optimal parameters on Out-of-Sample
+        dp, sl, tp = best_params
+        df_oos_temp = df_oos.copy()
+        df_oos_temp["donchian_high"] = df_oos_temp["high"].rolling(window=dp).max()
+        df_oos_temp["donchian_low"] = df_oos_temp["low"].rolling(window=dp).min()
+        
+        oos_res = run_backtest(
+            df=df_oos_temp,
+            donchian_period=dp,
+            ema_period=200,
+            sl_atr_mult=sl,
+            tp_atr_mult=tp,
+            instrument=instrument,
+            slippage_ticks=slippage_ticks,
+            commission_rt=commission_rt,
+            eod_exit_bar_from_end=eod_exit_bar_from_end,
+        )
+        
+        step_trades = oos_res.get("trade_log", [])
+        all_oos_trades.extend(step_trades)
+        
+        wfo_steps.append({
+            "is_start": str(train_start.date()),
+            "is_end": str(train_end.date()),
+            "oos_start": str(train_end.date()),
+            "oos_end": str(min(test_end, end_date).date()),
+            "optimal_params": {
+                "donchian_period": dp,
+                "sl_atr_multiplier": sl,
+                "tp_atr_multiplier": tp,
+            },
+            "is_sharpe": round(best_sharpe, 3),
+            "oos_trades_count": len(step_trades),
+            "oos_net_pnl": round(sum(t["pnl_usd"] for t in step_trades), 2) if step_trades else 0.0
+        })
+        
+        current_date = test_end
+
+    if not all_oos_trades:
+        return {"error": "WFO yielded no trades in out-of-sample periods."}
+
+    # Stitch metrics
+    pnls = [t["pnl_usd"] for t in all_oos_trades]
+    n_trades = len(all_oos_trades)
+    winners = [p for p in pnls if p > 0]
+    losers = [p for p in pnls if p <= 0]
+    n_win = len(winners)
+    n_loss = len(losers)
+    win_rate = n_win / n_trades
+
+    gross_profit = sum(winners) if winners else 0.0
+    gross_loss = abs(sum(losers)) if losers else 0.0
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+    avg_win = np.mean(winners) if winners else 0.0
+    avg_loss = np.mean(losers) if losers else 0.0
+    avg_rr = abs(avg_win / avg_loss) if avg_loss != 0 else float("inf")
+
+    equity = np.cumsum(pnls)
+    peak = np.maximum.accumulate(equity)
+    drawdown = equity - peak
+    max_drawdown = float(np.min(drawdown))
+
+    # Annualised Sharpe ratio based on daily returns in pure Python
+    daily_totals: dict[str, float] = {}
+    for t in all_oos_trades:
+        date_str = t["exit_bar"][:10]
+        daily_totals[date_str] = daily_totals.get(date_str, 0.0) + t["pnl_usd"]
+
+    daily_pnl = list(daily_totals.values())
+    if len(daily_pnl) > 1:
+        daily_arr = np.array(daily_pnl)
+        sharpe = (np.mean(daily_arr) / (np.std(daily_arr) + 1e-9)) * np.sqrt(252)
+    else:
+        sharpe = 0.0
+
+    return {
+        "instrument": instrument,
+        "performance": {
+            "total_trades": n_trades,
+            "winning_trades": n_win,
+            "losing_trades": n_loss,
+            "win_rate_pct": round(win_rate * 100, 2),
+            "avg_win_usd": round(float(avg_win), 2),
+            "avg_loss_usd": round(float(avg_loss), 2),
+            "avg_reward_risk_ratio": round(float(avg_rr), 3),
+            "gross_profit_usd": round(gross_profit, 2),
+            "gross_loss_usd": round(gross_loss, 2),
+            "net_pnl_usd": round(sum(pnls), 2),
+            "profit_factor": round(profit_factor, 3) if not math.isinf(profit_factor) else "inf",
+            "max_drawdown_usd": round(max_drawdown, 2),
+            "sharpe_ratio_annualised": round(float(sharpe), 3),
+        },
+        "wfo_steps": wfo_steps,
+        "trade_log": all_oos_trades,
         "equity_curve": [round(float(e), 2) for e in equity.tolist()],
     }
 
@@ -346,20 +494,15 @@ def run_backtest(
 
 class BacktestTool(BaseTool):
     """
-    Runs a vectorised intraday backtest of a VWAP+RSI mean-reversion strategy.
-
-    Requires indicator-enriched bar data saved in a local JSON file.
-    Simulates next-bar execution and saves detailed results to a local file.
+    Runs a vectorised backtest or a 10-year Walk-Forward Optimization (WFO)
+    of the Donchian Breakout + EMA trend strategy.
     """
 
     name: str = "Strategy Backtester"
     description: str = (
-        "Runs a vectorised intraday backtest of a VWAP+RSI strategy using "
-        "historical bar data from a local indicator file. "
-        "Accepts entry thresholds, take-profit/stop-loss in ticks, and instrument. "
-        "Saves the detailed results and full trade log to a local file, "
-        "and returns a summary JSON with key performance metrics. "
-        "Use this to validate strategy parameters."
+        "Runs a vectorised backtest or 10-year Walk-Forward Optimization (WFO) of "
+        "the Donchian Breakout + EMA strategy. Accepts parameter ranges, "
+        "instrument, and optimization flags. Saves detailed logs and returns a summary JSON."
     )
     args_schema: Type[BaseModel] = BacktestInput
 
@@ -367,19 +510,19 @@ class BacktestTool(BaseTool):
         self,
         input_file: str = "indicator_data.json",
         output_file: str = "backtest_results.json",
-        long_vwap_zscore_threshold: float = -1.5,
-        long_rsi_threshold: float = 35.0,
-        short_vwap_zscore_threshold: float = 1.5,
-        short_rsi_threshold: float = 65.0,
-        take_profit_ticks: int = 20,
-        stop_loss_ticks: int = 12,
+        donchian_period: int = 20,
+        ema_period: int = 200,
+        atr_period: int = 14,
+        sl_atr_multiplier: float = 2.0,
+        tp_atr_multiplier: float = 4.0,
         instrument: str = "NQ",
         slippage_ticks: int = 1,
         commission_per_rt: float = 4.10,
-        eod_exit_bar_from_end: int = 3,
+        eod_exit_bar_from_end: int = 0,
+        run_walk_forward: bool = True,
     ) -> str:
         """
-        Execute backtest, save to file, and return summary JSON.
+        Execute backtest/WFO, save to file, and return summary JSON.
         """
         try:
             with open(input_file, "r") as f:
@@ -399,36 +542,43 @@ class BacktestTool(BaseTool):
         df[dt_col] = pd.to_datetime(df[dt_col])
         df = df.set_index(dt_col).sort_index()
 
-        required_cols = ["open", "high", "low", "close", "vwap_zscore", "rsi"]
+        required_cols = ["open", "high", "low", "close", "donchian_high", "donchian_low", "ema", "atr"]
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
             return json.dumps(
                 {"error": f"Missing columns in indicator data: {missing}. "
-                          "Ensure IndicatorTool was called first."}
+                          "Ensure IndicatorTool was called first with breakout settings."}
             )
 
         for col in required_cols + ["volume"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        df.dropna(subset=["vwap_zscore", "rsi", "open", "high", "low", "close"], inplace=True)
+        df.dropna(subset=["donchian_high", "donchian_low", "ema", "atr", "open", "high", "low", "close"], inplace=True)
 
-        if len(df) < 50:
-            return json.dumps({"error": "Insufficient bars for backtesting (need ≥ 50)."})
+        if len(df) < 100:
+            return json.dumps({"error": "Insufficient bars for backtesting."})
 
-        results = run_backtest(
-            df=df,
-            long_z_thresh=long_vwap_zscore_threshold,
-            long_rsi_thresh=long_rsi_threshold,
-            short_z_thresh=short_vwap_zscore_threshold,
-            short_rsi_thresh=short_rsi_threshold,
-            tp_ticks=take_profit_ticks,
-            sl_ticks=stop_loss_ticks,
-            instrument=instrument,
-            slippage_ticks=slippage_ticks,
-            commission_rt=commission_per_rt,
-            eod_exit_bar_from_end=eod_exit_bar_from_end,
-        )
+        if run_walk_forward:
+            results = run_wfo_optimization(
+                df=df,
+                instrument=instrument,
+                slippage_ticks=slippage_ticks,
+                commission_rt=commission_per_rt,
+                eod_exit_bar_from_end=eod_exit_bar_from_end,
+            )
+        else:
+            results = run_backtest(
+                df=df,
+                donchian_period=donchian_period,
+                ema_period=ema_period,
+                sl_atr_mult=sl_atr_multiplier,
+                tp_atr_mult=tp_atr_multiplier,
+                instrument=instrument,
+                slippage_ticks=slippage_ticks,
+                commission_rt=commission_per_rt,
+                eod_exit_bar_from_end=eod_exit_bar_from_end,
+            )
 
         if "error" in results:
             return json.dumps(results)
@@ -439,14 +589,14 @@ class BacktestTool(BaseTool):
         except Exception as e:
             return json.dumps({"error": f"Failed to save backtest results to {output_file}: {e}"})
 
-        # Return a small summary to avoid LLM context overflow
         return_summary = {
             "instrument": results.get("instrument"),
-            "params": results.get("params"),
             "performance": results.get("performance"),
-            "exit_reason_breakdown": results.get("exit_reason_breakdown"),
             "saved_to": output_file,
             "total_trades_saved": len(results.get("trade_log", [])),
         }
+        if "wfo_steps" in results:
+            return_summary["wfo_steps_count"] = len(results.get("wfo_steps", []))
+            return_summary["wfo_steps"] = results.get("wfo_steps")
 
         return json.dumps(return_summary, default=str)

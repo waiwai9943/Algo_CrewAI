@@ -49,6 +49,18 @@ class IndicatorInput(BaseModel):
         default=[1.0, 2.0],
         description="Std-dev multipliers for VWAP bands. Default: [1.0, 2.0] → ±1σ and ±2σ.",
     )
+    donchian_period: int = Field(
+        default=20,
+        description="Donchian Channel lookback period. Default: 20.",
+    )
+    ema_period: int = Field(
+        default=200,
+        description="Exponential Moving Average period for trend filtering. Default: 200.",
+    )
+    atr_period: int = Field(
+        default=14,
+        description="Average True Range (ATR) period. Default: 14.",
+    )
 
 
 # ─────────────────────────────────────────────
@@ -149,8 +161,8 @@ def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 class IndicatorTool(BaseTool):
     """
-    Computes VWAP, VWAP z-score, VWAP bands (±1σ, ±2σ), and RSI from
-    OHLCV data saved in a local JSON file.
+    Computes VWAP, VWAP z-score, VWAP bands (±1σ, ±2σ), Donchian Channels,
+    EMA, ATR, and RSI from OHLCV data saved in a local JSON file.
 
     Saves the enriched indicators data to a local output file and returns summary stats.
     """
@@ -158,8 +170,10 @@ class IndicatorTool(BaseTool):
     name: str = "Indicator Calculator"
     description: str = (
         "Computes VWAP (session-anchored, resets daily), VWAP z-score, "
-        "VWAP upper/lower bands (±1σ and ±2σ), and RSI from a local raw market data JSON file. "
-        "Saves the enriched indicators to another local JSON file and returns summary stats. "
+        "VWAP upper/lower bands (±1σ and ±2σ), RSI, Donchian Channels, "
+        "Exponential Moving Average (EMA) and Average True Range (ATR) "
+        "from a local raw market data JSON file. Saves the enriched indicators "
+        "to another local JSON file and returns summary stats. "
         "Use this after MarketDataTool and before BacktestTool."
     )
     args_schema: Type[BaseModel] = IndicatorInput
@@ -171,6 +185,9 @@ class IndicatorTool(BaseTool):
         rsi_period: int = 14,
         vwap_std_window: int = 20,
         vwap_band_multipliers: list[float] | None = None,
+        donchian_period: int = 20,
+        ema_period: int = 200,
+        atr_period: int = 14,
     ) -> str:
         """
         Compute all indicators and save enriched bar data to output_file.
@@ -203,15 +220,30 @@ class IndicatorTool(BaseTool):
 
         df.dropna(subset=["close", "volume", "typical_price"], inplace=True)
 
-        if len(df) < max(rsi_period, vwap_std_window) + 5:
+        min_required_len = max(rsi_period, vwap_std_window, donchian_period, ema_period, atr_period) + 5
+        if len(df) < min_required_len:
             return json.dumps(
-                {"error": f"Insufficient bars ({len(df)}) for indicator computation."}
+                {"error": f"Insufficient bars ({len(df)}) for indicator computation. Need at least {min_required_len}."}
             )
 
         # ── Compute indicators ───────────────────────────────────
         df["vwap"] = compute_session_vwap(df)
         df["vwap_zscore"] = compute_vwap_zscore(df["close"], df["vwap"], vwap_std_window)
         df["rsi"] = compute_rsi(df["close"], rsi_period)
+
+        # Donchian Channels (rolling high/low of previous N bars)
+        df["donchian_high"] = df["high"].rolling(window=donchian_period).max()
+        df["donchian_low"] = df["low"].rolling(window=donchian_period).min()
+
+        # EMA Trend Filter
+        df["ema"] = df["close"].ewm(span=ema_period, adjust=False).mean()
+
+        # ATR calculation
+        prev_close = df["close"].shift(1)
+        tr = np.maximum(df["high"] - df["low"], 
+                        np.maximum(abs(df["high"] - prev_close), 
+                                   abs(df["low"] - prev_close)))
+        df["atr"] = tr.ewm(alpha=1/atr_period, adjust=False).mean()
 
         # Rolling std of (close - vwap) for bands
         deviation = df["close"] - df["vwap"]
@@ -223,13 +255,16 @@ class IndicatorTool(BaseTool):
             df[f"vwap_lower_{label}"] = df["vwap"] - mult * rolling_std
 
         # ── Compute summary statistics ───────────────────────────
-        valid = df.dropna(subset=["rsi", "vwap_zscore"])
+        valid = df.dropna(subset=["rsi", "vwap_zscore", "donchian_high", "donchian_low", "ema", "atr"])
         summary = {
             "total_bars": int(len(df)),
             "valid_bars_with_indicators": int(len(valid)),
             "rsi_period": rsi_period,
             "vwap_std_window": vwap_std_window,
             "vwap_band_multipliers": vwap_band_multipliers,
+            "donchian_period": donchian_period,
+            "ema_period": ema_period,
+            "atr_period": atr_period,
             "rsi_stats": {
                 "mean": round(float(valid["rsi"].mean()), 2),
                 "min":  round(float(valid["rsi"].min()), 2),
@@ -240,11 +275,12 @@ class IndicatorTool(BaseTool):
             "vwap_zscore_stats": {
                 "mean": round(float(valid["vwap_zscore"].mean()), 4),
                 "std":  round(float(valid["vwap_zscore"].std()), 4),
-                "pct_below_neg1":  round(float((valid["vwap_zscore"] < -1).mean() * 100), 2),
-                "pct_above_pos1":  round(float((valid["vwap_zscore"] > 1).mean() * 100), 2),
-                "pct_below_neg2":  round(float((valid["vwap_zscore"] < -2).mean() * 100), 2),
-                "pct_above_pos2":  round(float((valid["vwap_zscore"] > 2).mean() * 100), 2),
             },
+            "atr_stats": {
+                "mean": round(float(valid["atr"].mean()), 2),
+                "min":  round(float(valid["atr"].min()), 2),
+                "max":  round(float(valid["atr"].max()), 2),
+            }
         }
 
         # ── Serialise output ─────────────────────────────────────
@@ -261,7 +297,7 @@ class IndicatorTool(BaseTool):
             "interval": payload.get("interval", "N/A"),
             "summary": summary,
             "indicator_columns": [
-                "vwap", "vwap_zscore", "rsi",
+                "vwap", "vwap_zscore", "rsi", "donchian_high", "donchian_low", "ema", "atr",
                 *[f"vwap_upper_{str(m).replace('.','_')}" for m in vwap_band_multipliers],
                 *[f"vwap_lower_{str(m).replace('.','_')}" for m in vwap_band_multipliers],
             ],

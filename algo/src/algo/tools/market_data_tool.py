@@ -42,10 +42,10 @@ class MarketDataInput(BaseModel):
         ),
     )
     interval: str = Field(
-        default="5m",
+        default="1h",
         description=(
-            "Bar interval. For intraday, use '1m', '2m', '5m', '15m', '30m', '60m'. "
-            "Note: intervals <1h are only available for the last 60 days."
+            "Bar interval. For intraday/swing, use '1h', '15m', '30m', '5m'. "
+            "Default: '1h' to ensure fast execution and robust swing signals."
         ),
     )
     session_open_hour: int = Field(
@@ -92,36 +92,89 @@ class MarketDataTool(BaseTool):
         output_file: str = "market_data.json",
     ) -> str:
         """
-        Download OHLCV data via yfinance, save to file, and return summary JSON.
+        Load historical OHLCV data from local CSV if available, or fall back to yfinance.
         """
-        try:
-            raw: pd.DataFrame = yf.download(
-                tickers=ticker,
-                period=period,
-                interval=interval,
-                progress=False,
-                auto_adjust=True,
-            )
-        except Exception as exc:
-            return json.dumps({"error": f"yfinance download failed: {exc}"})
+        import os
+        
+        ticker_upper = ticker.upper().replace("=F", "")
+        local_file = None
+        
+        # Map ticker to local files
+        if "USATECH" in ticker_upper or "NQ" in ticker_upper:
+            local_file = "data/2026.6.7USATECHIDXUSD-M5-No Session.csv"
+        elif "LIGHTCMD" in ticker_upper or "CL" in ticker_upper:
+            local_file = "data/2026.6.7LIGHTCMDUSD-M5-No Session.csv"
+        elif "USA30" in ticker_upper or "YM" in ticker_upper:
+            local_file = "data/2026.6.7USA30IDXUSD-M5-No Session.csv"
 
-        if raw.empty:
-            return json.dumps({"error": f"No data returned for {ticker}."})
+        df = None
+        loaded_locally = False
+        
+        if local_file and os.path.exists(local_file):
+            try:
+                raw_df = pd.read_csv(local_file)
+                # Check column formats
+                if "Date" in raw_df.columns and "Time" in raw_df.columns:
+                    raw_df["datetime"] = pd.to_datetime(raw_df["Date"].astype(str) + " " + raw_df["Time"].astype(str))
+                elif "datetime" in raw_df.columns:
+                    raw_df["datetime"] = pd.to_datetime(raw_df["datetime"])
+                else:
+                    raw_df["datetime"] = pd.to_datetime(raw_df.index)
+                
+                raw_df = raw_df.set_index("datetime").sort_index()
+                raw_df.rename(columns={
+                    "Open": "open", "High": "high", "Low": "low", 
+                    "Close": "close", "Volume": "volume", "Volume.1": "volume_other"
+                }, inplace=True, errors="ignore")
+                
+                df = raw_df[["open", "high", "low", "close", "volume"]].copy()
+                df.dropna(inplace=True)
+                
+                # Resample based on the requested interval
+                rule = None
+                interval_lower = interval.lower()
+                if interval_lower == "1m": rule = "1min"
+                elif interval_lower == "2m": rule = "2min"
+                elif interval_lower == "5m": rule = "5min"
+                elif interval_lower == "15m": rule = "15min"
+                elif interval_lower == "30m": rule = "30min"
+                elif interval_lower in ("60m", "1h"): rule = "1h"
+                
+                if rule and rule != "5min":
+                    df = df.resample(rule).agg({
+                        "open": "first",
+                        "high": "max",
+                        "low": "min",
+                        "close": "last",
+                        "volume": "sum"
+                    }).dropna()
+                    print(f"Resampled local data to {interval}. Bars: {len(df)}")
+                
+                loaded_locally = True
+                print(f"Loaded local data from {local_file}. Bars: {len(df)}")
+            except Exception as e:
+                print(f"Failed to load local data from {local_file}: {e}. Falling back to yfinance.")
 
-        # Flatten MultiIndex columns if present (yfinance sometimes returns them)
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw.columns = raw.columns.get_level_values(0)
+        if not loaded_locally:
+            try:
+                raw: pd.DataFrame = yf.download(
+                    tickers=ticker,
+                    period=period,
+                    interval=interval,
+                    progress=False,
+                    auto_adjust=True,
+                )
+                if not raw.empty:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        raw.columns = raw.columns.get_level_values(0)
+                    raw.columns = [c.lower() for c in raw.columns]
+                    df = raw[["open", "high", "low", "close", "volume"]].copy()
+                    df.dropna(inplace=True)
+            except Exception as exc:
+                return json.dumps({"error": f"yfinance download failed: {exc}"})
 
-        # Normalise column names to lowercase
-        raw.columns = [c.lower() for c in raw.columns]
-        required = {"open", "high", "low", "close", "volume"}
-        if not required.issubset(set(raw.columns)):
-            return json.dumps(
-                {"error": f"Missing columns. Got: {list(raw.columns)}"}
-            )
-
-        df = raw[["open", "high", "low", "close", "volume"]].copy()
-        df.dropna(inplace=True)
+        if df is None or df.empty:
+            return json.dumps({"error": f"No data returned or found for {ticker}."})
 
         # Tag each bar with its session date (for VWAP reset)
         df.index = pd.to_datetime(df.index)

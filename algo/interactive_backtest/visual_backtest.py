@@ -99,7 +99,7 @@ class VwapRsiMeanReversion(Strategy):
 # ─────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    CSV_PATH = r"C:\QuantDataManager125\export\2026.6.7USATECHIDXUSD-M5-No Session.csv"
+    CSV_PATH = r"data/2026.6.7USATECHIDXUSD-M5-No Session.csv"
     print(f"Loading data from {CSV_PATH}...")
     
     df = pd.read_csv(CSV_PATH)

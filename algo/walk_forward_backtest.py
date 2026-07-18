@@ -3,7 +3,7 @@ import numpy as np
 from datetime import timedelta
 from backtesting import Backtest, Strategy
 
-CSV_PATH = r"C:\QuantDataManager125\export\2026.6.7USATECHIDXUSD-M5-No Session.csv"
+CSV_PATH = r"data/2026.6.7USATECHIDXUSD-M5-No Session.csv"
 print(f"Loading CSV: {CSV_PATH}")
 raw = pd.read_csv(CSV_PATH)
 
